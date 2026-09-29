@@ -486,12 +486,14 @@ App.panels = (function () {
     $('.modal-body', m).innerHTML = html;
     $('.modal-card', m).className = 'modal-card ' + cls;
     m.hidden = false;
-    const f = $('.modal-body input, .modal-body textarea, .modal-body button', m);
-    setTimeout(() => (f || $('.modal-x', m)).focus(), 30);
+    $('.modal-card', m).scrollTop = 0;
+    const f = $('.modal-body input, .modal-body textarea', m);
+    setTimeout(() => (f || $('.modal-x', m)).focus({ preventScroll: true }), 30);
   }
   function closeModal() {
     el.modal.hidden = true;
     if (el.modal.dataset.welcome) { settings.welcomed = true; App.saveSettings(); el.modal.dataset.welcome = ''; }
+    App.flushToasts();
   }
   function glossaryHTML(only) {
     const G = FCContent.GLOSSARY;
@@ -525,11 +527,14 @@ App.panels = (function () {
     openModal(h);
     if (section === 'gloss') setTimeout(() => { const g = $('#gloss'); if (g) g.scrollIntoView(); }, 50);
   }
-  function showWelcome() {
+  function showWelcome(sharedTrack) {
     el.modal.dataset.welcome = '1';
+    const loaded = sharedTrack
+      ? '<p>You opened a shared track: <b>' + esc(sharedTrack.name || 'a friend\'s coaster') + '</b> — <code>' + esc(sharedTrack.f) + '</code>. Press ▶ Ride to try it!</p>'
+      : '<p>We loaded the <b>Teacher\'s Classic</b>: <code>-2x^4 + 7x^3 - 4x^2 - 0.5x + 1</code> from <i>x</i> = −0.40907 to 2.76854. It starts and ends on zeros… but is it safe to ride? 🤔</p>';
     openModal('<h2>🎢 Welcome to Function Coaster!</h2><p>Every roller coaster here is the <b>graph of a function</b>. Type a function, choose where the track starts and ends, and ride it — with real physics.</p>' +
       '<div class="steps"><div class="step"><div class="n">1</div><b>Type</b><p>a function of <i>x</i>, like <code>x^2 - 4</code></p></div><div class="step"><div class="n">2</div><b>Build</b><p>and study its zeros, hills, valleys and slopes</p></div><div class="step"><div class="n">3</div><b>Ride</b><p>then remix it, match tracks and earn badges</p></div></div>' +
-      '<p>We loaded the <b>Teacher\'s Classic</b>: <code>-2x^4 + 7x^3 - 4x^2 - 0.5x + 1</code> from <i>x</i> = −0.40907 to 2.76854. It starts and ends on zeros… but is it safe to ride? 🤔</p>' +
+      loaded +
       '<div class="modal-actions"><button class="btn btn-small btn-ghost" data-act="help">❓ Full guide</button><button class="btn btn-ride" data-act="welcome-ride">▶ Let\'s ride!</button></div>');
   }
   function showSettings() {

@@ -27,19 +27,26 @@
     bind();
     App.resizeAll();
 
-    // first track: shared code in the URL → last track → the teacher's classic
-    let first = null;
-    const m = /FC1-[A-Za-z0-9+/_-]+/.exec(decodeURIComponent(location.hash || ''));
-    if (m) { try { first = FCStore.decodeTrack(m[0]); } catch (e) { first = null; } }
+    // first track: shared link in the URL → last track → the teacher's classic
+    let first = trackFromHash(), shared = !!first;
     const hist = FCStore.history.all();
     if (!first && hist.length) first = hist[0];
     if (!first) first = FCContent.PRESETS[0];
+    // welcome first, so badges earned while loading wait until it's closed
+    if (!settings.welcomed) panels.showWelcome(shared ? first : null);
     App.loadTrack(first);
     panels.renderMissions();
     App.updateMissionBadge();
     requestAnimationFrame(App.frame);
     load3D();
-    if (!settings.welcomed) setTimeout(() => panels.showWelcome(), 400);
+  }
+
+  function trackFromHash() {
+    let h = '';
+    try { h = decodeURIComponent(location.hash || ''); } catch (e) { h = location.hash || ''; }
+    const m = /FC1-[A-Za-z0-9+/_-]+/.exec(h);
+    if (!m) return null;
+    try { return FCStore.decodeTrack(m[0]); } catch (e) { return null; }
   }
 
   async function load3D() {
@@ -159,6 +166,13 @@
       else if (e.key === 'm' || e.key === 'M') toggleSound();
       else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
       else if ('1234'.includes(e.key) && e.key.length === 1) { const mode = ['pov', 'chase', 'side', 'orbit'][+e.key - 1]; state.userPickedOrbit = mode === 'orbit'; App.setCamera(mode); }
+    });
+    // a shared link clicked while the app is already open only changes the #hash
+    window.addEventListener('hashchange', () => {
+      const t = trackFromHash();
+      if (!t) return;
+      const same = t.f === state.fText && t.a === state.aText && t.b === state.bText && JSON.stringify(t.params || {}) === JSON.stringify(state.params || {});
+      if (!same) { App.loadTrack(t); App.toast('🔗 Opened a shared track: <b>' + FC.escapeHTML(state.name) + '</b>'); }
     });
     window.addEventListener('resize', () => App.resizeAll());
     if (window.ResizeObserver) {

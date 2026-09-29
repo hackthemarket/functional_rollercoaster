@@ -548,7 +548,13 @@ textarea.code { width: 100%; min-height: 90px; background: var(--bg-2); border: 
   .cam-seg button { padding: 5px 7px; font-size: 12px; }
   .controlbar { gap: 8px; }
   #viewSeg { display: none; }
-  .modal-body .steps { grid-template-columns: 1fr; }
+  .modal { padding: 10px; }
+  .modal-card { padding: 16px 16px 14px; }
+  .modal-body h2 { font-size: 22px; padding-right: 40px; }
+  .modal-body .steps { grid-template-columns: 1fr; gap: 6px; margin: 10px 0; }
+  .modal-body .step { display: grid; grid-template-columns: 28px 1fr; column-gap: 8px; align-items: baseline; padding: 8px 10px; }
+  .modal-body .step .n { font-size: 22px; grid-row: span 2; }
+  .modal-body .step p { margin: 0; }
   .syntax { grid-template-columns: 1fr; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rating { grid-template-columns: 84px 1fr 92px; }
@@ -6115,13 +6121,21 @@ var App = (function () {
   }
 
   // ---------------------------------------------------------------- toasts & confetti
+  const pendingToasts = [];
   function toast(html, cls = '', ms = 3800) {
+    // badge pop-ups wait while a dialog (like the welcome screen) is open
+    if (cls === 'badge-toast' && !el.modal.hidden) { pendingToasts.push([html, cls, ms]); return; }
     const d = document.createElement('div');
     d.className = 'toast ' + cls;
     d.innerHTML = html;
     el.toasts.appendChild(d);
     while (el.toasts.children.length > 4) el.toasts.removeChild(el.toasts.firstChild);
     setTimeout(() => { d.classList.add('out'); setTimeout(() => d.remove(), 450); }, ms);
+  }
+  function flushToasts() {
+    const list = pendingToasts.splice(0);
+    list.forEach((t, i) => setTimeout(() => toast(t[0], t[1], t[2]), 300 + i * 700));
+    if (list.length) setTimeout(confetti, 300);
   }
   function confetti() {
     if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -6179,7 +6193,7 @@ var App = (function () {
 
   return {
     $, $$, el, state, settings, saveSettings, grabElements, build, renderPreview, schedulePreview, startRide, stopRide, togglePause, onRideButton,
-    setCamera, setLayout, resizeAll, toast, confetti, loadTrack, snapToZeros, enterMatch, exitMatch, checkMissions, updateMissionBadge, frame, onGraphPick, refreshGhost,
+    setCamera, setLayout, resizeAll, toast, flushToasts, confetti, loadTrack, snapToZeros, enterMatch, exitMatch, checkMissions, updateMissionBadge, frame, onGraphPick, refreshGhost,
     speedText, speedParts, rideOptions, forecastSoon, syncParams, renderParamBar, missionCtx, updateHUDIdle, setRideButton, handleEvents,
   };
 })();
@@ -6673,12 +6687,14 @@ App.panels = (function () {
     $('.modal-body', m).innerHTML = html;
     $('.modal-card', m).className = 'modal-card ' + cls;
     m.hidden = false;
-    const f = $('.modal-body input, .modal-body textarea, .modal-body button', m);
-    setTimeout(() => (f || $('.modal-x', m)).focus(), 30);
+    $('.modal-card', m).scrollTop = 0;
+    const f = $('.modal-body input, .modal-body textarea', m);
+    setTimeout(() => (f || $('.modal-x', m)).focus({ preventScroll: true }), 30);
   }
   function closeModal() {
     el.modal.hidden = true;
     if (el.modal.dataset.welcome) { settings.welcomed = true; App.saveSettings(); el.modal.dataset.welcome = ''; }
+    App.flushToasts();
   }
   function glossaryHTML(only) {
     const G = FCContent.GLOSSARY;
@@ -6712,11 +6728,14 @@ App.panels = (function () {
     openModal(h);
     if (section === 'gloss') setTimeout(() => { const g = $('#gloss'); if (g) g.scrollIntoView(); }, 50);
   }
-  function showWelcome() {
+  function showWelcome(sharedTrack) {
     el.modal.dataset.welcome = '1';
+    const loaded = sharedTrack
+      ? '<p>You opened a shared track: <b>' + esc(sharedTrack.name || 'a friend\'s coaster') + '</b> — <code>' + esc(sharedTrack.f) + '</code>. Press ▶ Ride to try it!</p>'
+      : '<p>We loaded the <b>Teacher\'s Classic</b>: <code>-2x^4 + 7x^3 - 4x^2 - 0.5x + 1</code> from <i>x</i> = −0.40907 to 2.76854. It starts and ends on zeros… but is it safe to ride? 🤔</p>';
     openModal('<h2>🎢 Welcome to Function Coaster!</h2><p>Every roller coaster here is the <b>graph of a function</b>. Type a function, choose where the track starts and ends, and ride it — with real physics.</p>' +
       '<div class="steps"><div class="step"><div class="n">1</div><b>Type</b><p>a function of <i>x</i>, like <code>x^2 - 4</code></p></div><div class="step"><div class="n">2</div><b>Build</b><p>and study its zeros, hills, valleys and slopes</p></div><div class="step"><div class="n">3</div><b>Ride</b><p>then remix it, match tracks and earn badges</p></div></div>' +
-      '<p>We loaded the <b>Teacher\'s Classic</b>: <code>-2x^4 + 7x^3 - 4x^2 - 0.5x + 1</code> from <i>x</i> = −0.40907 to 2.76854. It starts and ends on zeros… but is it safe to ride? 🤔</p>' +
+      loaded +
       '<div class="modal-actions"><button class="btn btn-small btn-ghost" data-act="help">❓ Full guide</button><button class="btn btn-ride" data-act="welcome-ride">▶ Let\'s ride!</button></div>');
   }
   function showSettings() {
@@ -6846,19 +6865,26 @@ App.panels = (function () {
     bind();
     App.resizeAll();
 
-    // first track: shared code in the URL → last track → the teacher's classic
-    let first = null;
-    const m = /FC1-[A-Za-z0-9+/_-]+/.exec(decodeURIComponent(location.hash || ''));
-    if (m) { try { first = FCStore.decodeTrack(m[0]); } catch (e) { first = null; } }
+    // first track: shared link in the URL → last track → the teacher's classic
+    let first = trackFromHash(), shared = !!first;
     const hist = FCStore.history.all();
     if (!first && hist.length) first = hist[0];
     if (!first) first = FCContent.PRESETS[0];
+    // welcome first, so badges earned while loading wait until it's closed
+    if (!settings.welcomed) panels.showWelcome(shared ? first : null);
     App.loadTrack(first);
     panels.renderMissions();
     App.updateMissionBadge();
     requestAnimationFrame(App.frame);
     load3D();
-    if (!settings.welcomed) setTimeout(() => panels.showWelcome(), 400);
+  }
+
+  function trackFromHash() {
+    let h = '';
+    try { h = decodeURIComponent(location.hash || ''); } catch (e) { h = location.hash || ''; }
+    const m = /FC1-[A-Za-z0-9+/_-]+/.exec(h);
+    if (!m) return null;
+    try { return FCStore.decodeTrack(m[0]); } catch (e) { return null; }
   }
 
   async function load3D() {
@@ -6978,6 +7004,13 @@ App.panels = (function () {
       else if (e.key === 'm' || e.key === 'M') toggleSound();
       else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
       else if ('1234'.includes(e.key) && e.key.length === 1) { const mode = ['pov', 'chase', 'side', 'orbit'][+e.key - 1]; state.userPickedOrbit = mode === 'orbit'; App.setCamera(mode); }
+    });
+    // a shared link clicked while the app is already open only changes the #hash
+    window.addEventListener('hashchange', () => {
+      const t = trackFromHash();
+      if (!t) return;
+      const same = t.f === state.fText && t.a === state.aText && t.b === state.bText && JSON.stringify(t.params || {}) === JSON.stringify(state.params || {});
+      if (!same) { App.loadTrack(t); App.toast('🔗 Opened a shared track: <b>' + FC.escapeHTML(state.name) + '</b>'); }
     });
     window.addEventListener('resize', () => App.resizeAll());
     if (window.ResizeObserver) {

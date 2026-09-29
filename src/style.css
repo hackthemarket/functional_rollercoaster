@@ -535,7 +535,13 @@ textarea.code { width: 100%; min-height: 90px; background: var(--bg-2); border: 
   .cam-seg button { padding: 5px 7px; font-size: 12px; }
   .controlbar { gap: 8px; }
   #viewSeg { display: none; }
-  .modal-body .steps { grid-template-columns: 1fr; }
+  .modal { padding: 10px; }
+  .modal-card { padding: 16px 16px 14px; }
+  .modal-body h2 { font-size: 22px; padding-right: 40px; }
+  .modal-body .steps { grid-template-columns: 1fr; gap: 6px; margin: 10px 0; }
+  .modal-body .step { display: grid; grid-template-columns: 28px 1fr; column-gap: 8px; align-items: baseline; padding: 8px 10px; }
+  .modal-body .step .n { font-size: 22px; grid-row: span 2; }
+  .modal-body .step p { margin: 0; }
   .syntax { grid-template-columns: 1fr; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rating { grid-template-columns: 84px 1fr 92px; }

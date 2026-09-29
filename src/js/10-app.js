@@ -658,13 +658,21 @@ var App = (function () {
   }
 
   // ---------------------------------------------------------------- toasts & confetti
+  const pendingToasts = [];
   function toast(html, cls = '', ms = 3800) {
+    // badge pop-ups wait while a dialog (like the welcome screen) is open
+    if (cls === 'badge-toast' && !el.modal.hidden) { pendingToasts.push([html, cls, ms]); return; }
     const d = document.createElement('div');
     d.className = 'toast ' + cls;
     d.innerHTML = html;
     el.toasts.appendChild(d);
     while (el.toasts.children.length > 4) el.toasts.removeChild(el.toasts.firstChild);
     setTimeout(() => { d.classList.add('out'); setTimeout(() => d.remove(), 450); }, ms);
+  }
+  function flushToasts() {
+    const list = pendingToasts.splice(0);
+    list.forEach((t, i) => setTimeout(() => toast(t[0], t[1], t[2]), 300 + i * 700));
+    if (list.length) setTimeout(confetti, 300);
   }
   function confetti() {
     if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -722,7 +730,7 @@ var App = (function () {
 
   return {
     $, $$, el, state, settings, saveSettings, grabElements, build, renderPreview, schedulePreview, startRide, stopRide, togglePause, onRideButton,
-    setCamera, setLayout, resizeAll, toast, confetti, loadTrack, snapToZeros, enterMatch, exitMatch, checkMissions, updateMissionBadge, frame, onGraphPick, refreshGhost,
+    setCamera, setLayout, resizeAll, toast, flushToasts, confetti, loadTrack, snapToZeros, enterMatch, exitMatch, checkMissions, updateMissionBadge, frame, onGraphPick, refreshGhost,
     speedText, speedParts, rideOptions, forecastSoon, syncParams, renderParamBar, missionCtx, updateHUDIdle, setRideButton, handleEvents,
   };
 })();
