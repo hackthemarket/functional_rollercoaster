@@ -89,8 +89,13 @@
       el.btnSurprise.innerHTML = '🎲<span class="txt-wide"> Rolling…</span>';
       try {
         if (state.match) App.exitMatch();
-        const s = await FCRemix.surprise(panels.labSettings());
-        if (s) { App.loadTrack({ f: s.f, a: s.a, b: s.b }); App.toast('🎲 Surprise! <b>' + FC.escapeHTML(state.name) + '</b> — excitement ' + s.ev.ratings.excitement.toFixed(1) + '. Press ▶ Ride!'); }
+        const pw = state.mode === 'pieces';
+        const s = pw ? await FCRemix.surprisePW(panels.labSettings()) : await FCRemix.surprise(panels.labSettings());
+        if (s) {
+          App.loadTrack({ f: s.f, a: s.a, b: s.b });
+          if (pw) panels.showTab('pieces');
+          App.toast('🎲 Surprise! <b>' + FC.escapeHTML(state.name) + '</b> — excitement ' + s.ev.ratings.excitement.toFixed(1) + (pw ? '. Every joint is smooth — check the 🧩 Pieces tab to see how.' : '. Press ▶ Ride!'));
+        }
       } finally { el.btnSurprise.disabled = false; el.btnSurprise.innerHTML = prev; }
     });
     el.btnSnap.addEventListener('click', () => App.snapToZeros());
@@ -131,12 +136,12 @@
     // tabs
     $('.tabs').addEventListener('click', (e) => {
       const b = e.target.closest('button[data-tab]'); if (!b) return;
-      $$('.tabs button').forEach((x) => x.classList.toggle('on', x === b));
-      $$('.tab-panel').forEach((p) => p.classList.toggle('on', p.id === 'tab-' + b.dataset.tab));
-      if (b.dataset.tab === 'remix' && panels.isRemixDirty()) panels.renderRemix();
-      if (b.dataset.tab === 'garage') panels.renderGarage();
-      if (b.dataset.tab === 'missions') panels.renderMissions();
+      panels.showTab(b.dataset.tab);
     });
+    // one function ⇄ piecewise
+    el.modeSeg.addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (b) App.switchMode(b.dataset.mode); });
+    el.pwSummary.addEventListener('click', () => panels.showTab('pieces', true));
+    panels.bindPieces();
 
     // delegated actions across panels, results and modals
     document.addEventListener('click', onAction);
@@ -184,7 +189,7 @@
   }
 
   function onAction(e) {
-    const t = e.target.closest('[data-act],[data-mut],[data-lab],[data-preset],[data-match],[data-load],[data-fav],[data-code],[data-del],[data-gloss],.lm');
+    const t = e.target.closest('[data-act],[data-mut],[data-lab],[data-preset],[data-pwpreset],[data-match],[data-load],[data-fav],[data-code],[data-del],[data-gloss],.lm');
     if (!t) return;
     const d = t.dataset;
     if (d.gloss) { panels.showGloss(d.gloss); return; }
@@ -212,6 +217,14 @@
       App.toast('📚 <b>' + FC.escapeHTML(p.name) + '</b> — ' + FC.escapeHTML(p.blurb), '', 6000);
       return;
     }
+    if (d.pwpreset !== undefined) {
+      const p = FCContent.PW_PRESETS[+d.pwpreset];
+      if (state.match) App.exitMatch();
+      App.loadTrack({ f: p.f, a: '', b: '', params: p.params || {}, name: p.name });
+      panels.showTab('pieces', true);
+      App.toast('🧩 <b>' + FC.escapeHTML(p.name) + '</b> — ' + FC.escapeHTML(p.blurb), '', 7000);
+      return;
+    }
     if (d.match !== undefined) { App.enterMatch(FCContent.MATCHES[+d.match]); return; }
     if (d.load) { const t2 = FCStore.history.all().find((x) => x.id === d.load); if (t2) App.loadTrack(t2); return; }
     if (d.fav) { const t2 = FCStore.history.all().find((x) => x.id === d.fav); if (t2) { FCStore.history.update(t2.id, { favorite: !t2.favorite }); panels.renderGarage(); } return; }
@@ -225,6 +238,7 @@
         App.loadTrack({ f, a: state.aText, b: state.bText });
         break;
       }
+      case 'open-pieces': panels.showTab('pieces', true); break;
       case 'close-results': el.results.hidden = true; break;
       case 'ride-again': el.results.hidden = true; App.startRide(); break;
       case 'to-remix': el.results.hidden = true; $('.tabs button[data-tab="remix"]').click(); break;

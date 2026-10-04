@@ -92,6 +92,102 @@ var FCAnalysis = (function () {
     return reason;
   }
 
+  // ------------------------------------------------------------------ piecewise
+  /**
+   * Check a piecewise function: compiled pieces, the joints between neighbours and
+   * the problems that stop it from being a function (empty intervals, overlaps).
+   * joint.kind: smooth | corner | jump | gap | undefined   (errors: empty | overlap | double)
+   */
+  function pwCheck(ast, P, opts = {}) {
+    const info = FCMath.compilePW(ast, P || {});
+    const errors = [], warnings = [], joints = [];
+    const S = info.sorted;
+    let lo = Infinity, hi = -Infinity, unbounded = false;
+    for (const p of info.pieces) {
+      if (!isFinite(p.lo) && p.lo !== -Infinity) errors.push({ kind: 'bad', pieces: [p.k], msg: 'Piece ' + (p.k + 1) + ': its starting limit isn\'t a number.' });
+      if (!isFinite(p.hi) && p.hi !== Infinity) errors.push({ kind: 'bad', pieces: [p.k], msg: 'Piece ' + (p.k + 1) + ': its ending limit isn\'t a number.' });
+      if (p.lo >= p.hi) errors.push({ kind: 'empty', pieces: [p.k], msg: 'Piece ' + (p.k + 1) + ' covers no x values: ' + FC.fmt(p.lo, 4) + ' to ' + FC.fmt(p.hi, 4) + '. Put the smaller number first.' });
+      if (isFinite(p.lo)) lo = Math.min(lo, p.lo); else unbounded = true;
+      if (isFinite(p.hi)) hi = Math.max(hi, p.hi); else unbounded = true;
+    }
+    const a = opts.a !== undefined ? opts.a : lo, b = opts.b !== undefined ? opts.b : hi;
+    const w = Math.max(1e-9, (isFinite(b) && isFinite(a) ? b - a : 1));
+    for (const p of info.pieces) {
+      if (!p.d1) { const D = makeDerivs(p.f, isFinite(a) ? a : 0, isFinite(b) ? b : 1, p.coeffs); p.d1 = D.d1; p.d2 = D.d2; }
+    }
+    // typical size of the outputs, for tolerances
+    let yScale = 1;
+    for (const p of info.pieces) {
+      const l = isFinite(p.lo) ? p.lo : (isFinite(a) ? a : p.hi - 1), r = isFinite(p.hi) ? p.hi : (isFinite(b) ? b : p.lo + 1);
+      for (const t of [0, 0.5, 1]) { const y = p.f(l + (r - l) * t); if (isFinite(y)) yScale = Math.max(yScale, Math.abs(y)); }
+    }
+    const tolY = 2e-4 * yScale, tolExact = 1e-9 * yScale;
+    let maxHiPiece = null;
+    for (let i = 0; i < S.length; i++) {
+      const B = S[i];
+      if (maxHiPiece && maxHiPiece.hi > B.lo + 1e-12 * w && B.lo < B.hi) {
+        const A = maxHiPiece;
+        errors.push({ kind: 'overlap', pieces: [A.k, B.k], x0: B.lo, x1: Math.min(A.hi, B.hi), msg: 'Pieces ' + (A.k + 1) + ' and ' + (B.k + 1) + ' overlap for ' + FC.fmt(B.lo, 4) + ' < x < ' + FC.fmt(Math.min(A.hi, B.hi), 4) + ' — an x in there would get two heights. That breaks the vertical line test, so it isn\'t a function!' });
+      }
+      if (i > 0) {
+        const A = S[i - 1];
+        if (!(A.lo < A.hi) || !(B.lo < B.hi) || !isFinite(A.hi) || !isFinite(B.lo)) { /* reported above */ }
+        else if (B.lo > A.hi + 1e-12 * w) {
+          joints.push({ kind: 'gap', left: A.k, right: B.k, x: A.hi, x0: A.hi, x1: B.lo, L: A.f(A.hi), R: B.f(B.lo) });
+          warnings.push({ kind: 'gap', pieces: [A.k, B.k], msg: 'No piece covers ' + FC.fmt(A.hi, 4) + ' < x < ' + FC.fmt(B.lo, 4) + ' — the track has a gap there.' });
+        } else if (Math.abs(B.lo - A.hi) <= 1e-12 * w) {
+          const xb = B.lo;
+          const L = A.f(xb), R = B.f(xb);
+          const j = { left: A.k, right: B.k, x: xb, L, R, dy: R - L, leftIncl: A.hiIncl, rightIncl: B.loIncl };
+          j.sL = slopeAt(A, xb, -1); j.sR = slopeAt(B, xb, 1);
+          j.hole = !A.hiIncl && !B.loIncl;
+          if (!isFinite(L) || !isFinite(R)) j.kind = 'undefined';
+          else if (Math.abs(R - L) > tolY) j.kind = 'jump';
+          else {
+            j.exact = Math.abs(R - L) <= tolExact;
+            const tolS = 2e-3 * (1 + Math.abs(j.sL) + Math.abs(j.sR));
+            j.kind = isFinite(j.sL) && isFinite(j.sR) && Math.abs(j.sR - j.sL) > tolS ? 'corner' : 'smooth';
+          }
+          if (A.hiIncl && B.loIncl && isFinite(L) && isFinite(R) && Math.abs(R - L) > tolExact) {
+            errors.push({ kind: 'double', pieces: [A.k, B.k], x: xb, msg: 'x = ' + FC.fmt(xb, 4) + ' is in both piece ' + (A.k + 1) + ' and piece ' + (B.k + 1) + ', and they give different heights (' + FC.fmt(L, 4) + ' and ' + FC.fmt(R, 4) + '). A function has only one output for each x — change one ≤ to <.' });
+          }
+          joints.push(j);
+        }
+      }
+      if (!maxHiPiece || B.hi > maxHiPiece.hi) maxHiPiece = B;
+    }
+    return { info, joints, errors, warnings, domain: { lo: isFinite(lo) ? lo : null, hi: isFinite(hi) ? hi : null, unbounded }, tolY };
+  }
+
+  function slopeAt(p, x, side) {
+    let d = p.d1(x);
+    if (!isFinite(d)) d = side < 0 ? p.d1(x, -Infinity, x) : p.d1(x, x, Infinity);
+    return d;
+  }
+
+  /** Derivatives that use each piece's own formula (no blurring across joints). */
+  function pwDerivs(info) {
+    // At a segment's end use the piece on the inside (the one-sided limit), not the next piece
+    const pick = (x, lo, hi) => {
+      const eps = 1e-9 * (1 + Math.abs(x));
+      const xq = hi !== undefined && x >= hi ? x - eps : lo !== undefined && x <= lo ? x + eps : x;
+      const p = info.pieceAt(xq);
+      if (p) return p;
+      let best = null, bd = Infinity;
+      for (const q of info.sorted) {
+        const d = x < q.lo ? q.lo - x : x > q.hi ? x - q.hi : 0;
+        if (d < bd) { bd = d; best = q; }
+      }
+      return bd < 1e-6 * (1 + Math.abs(x)) ? best : null;
+    };
+    return {
+      d1: (x, lo, hi) => { const p = pick(x, lo, hi); return p ? p.d1(x, lo, hi) : NaN; },
+      d2: (x, lo, hi) => { const p = pick(x, lo, hi); return p ? p.d2(x, lo, hi) : NaN; },
+      exact: false,
+      pick,
+    };
+  }
+
   function analyze(opts) {
     const { fn, a, b, coeffs, ast } = opts;
     const P = opts.P || {};
@@ -120,6 +216,15 @@ var FCAnalysis = (function () {
     const BOUND_HI = q90 + 2.5 * spread + 1e-9, BOUND_LO = q10 - 2.5 * spread - 1e-9;
     out.robust = { q10, q90, med, spread };
 
+    // piecewise: exact joints instead of guessing from samples
+    let pw = null, forced = [];
+    if (ast && ast.type === 'piecewise') {
+      pw = opts.pw || pwCheck(ast, P, { a, b });
+      out.pw = pw.info;
+      out.joints = pw.joints;
+      forced = pw.joints.filter((j) => j.kind === 'jump' && j.x > a && j.x < b).map((j) => ({ x: j.x, L: j.L, R: j.R }));
+    }
+
     // ---- 1. runs of valid samples
     const runs = [];
     let cur = null;
@@ -139,6 +244,12 @@ var FCAnalysis = (function () {
     for (const r of runs) {
       let start = { x: xs[r.i0], y: ys[r.i0], kind: r.i0 === 0 ? 'domain' : 'undefined', i: r.i0 };
       for (let i = r.i0; i < r.i1; i++) {
+        const fb = forced.length ? forced.find((q) => q.x > xs[i] && q.x <= xs[i + 1]) : null;
+        if (fb) {
+          pieces.push({ start, end: { x: fb.x, y: fb.L, kind: 'jump', i, pole: fb.x }, iFrom: start.i, iTo: i });
+          start = { x: fb.x, y: fb.R, kind: 'jump', i: i + 1, pole: fb.x };
+          continue;
+        }
         const dy = Math.abs(ys[i + 1] - ys[i]);
         if (dy > jumpThresh) {
           const jr = testJump(fn, xs[i], ys[i], xs[i + 1], ys[i + 1]);
@@ -224,7 +335,16 @@ var FCAnalysis = (function () {
     const addGap = (x0, x1, kind, extra) => {
       const at = extra && extra.pole !== undefined ? extra.pole : 0.5 * (x0 + x1);
       let why = null;
-      if (ast && kind !== 'jump') why = explainUndefined(ast, at, P) || explainUndefined(ast, 0.5 * (x0 + x1), P);
+      if (pw) {
+        const mid = 0.5 * (x0 + x1);
+        const jj = pw.joints.find((j) => j.kind === 'jump' && Math.abs(j.x - at) < 1e-9 * Math.max(1, w));
+        if (jj) { kind = 'jump'; why = 'piece ' + (jj.left + 1) + ' ends at height ' + FC.fmt(jj.L, 4) + ', piece ' + (jj.right + 1) + ' starts at ' + FC.fmt(jj.R, 4); }
+        else {
+          const pc = pw.info.pieceAt(mid);
+          why = pc ? (explainUndefined(pc.ast, mid, P) || 'piece ' + (pc.k + 1) + ' is undefined here') : 'no piece covers this part of the domain';
+          if (!pc && kind === 'undefined') kind = 'nopiece';
+        }
+      } else if (ast && kind !== 'jump') why = explainUndefined(ast, at, P) || explainUndefined(ast, 0.5 * (x0 + x1), P);
       out.gaps.push(Object.assign({ x0, x1, kind, why, at }, extra || {}));
     };
     if (segs[0].x0 > a + 1e-9 * w) addGap(a, segs[0].x0, segs[0].startKind === 'asymptote' ? 'asymptote' : 'undefined', { edge: 'start' });
@@ -240,7 +360,7 @@ var FCAnalysis = (function () {
     if (lastS.x1 < b - 1e-9 * w) addGap(lastS.x1, b, lastS.endKind === 'asymptote' ? 'asymptote' : 'undefined', { edge: 'end' });
 
     // ---- 6. derivatives
-    const D = makeDerivs(fn, a, b, coeffs);
+    const D = pw ? pwDerivs(pw.info) : makeDerivs(fn, a, b, coeffs);
     out.d1 = D.d1; out.d2 = D.d2; out.exactDerivs = D.exact;
 
     // ---- 7. range and endpoints
@@ -358,7 +478,13 @@ var FCAnalysis = (function () {
           if (!isFinite(v) || Math.abs(v) <= ddTiny) continue;
           const sg = Math.sign(v);
           if (ls !== 0 && sg !== ls) {
-            const xi = FC.bisect((t) => D.d2(t, s.x0, s.x1), s.xs[li], s.xs[i], 60);
+            let xi = null;
+            if (pw) {
+              const inside = pw.joints.filter((j) => j.x > s.xs[li] && j.x <= s.xs[i]);
+              if (inside.length === 1) xi = inside[0].x;
+              else if (inside.length > 1) { ls = sg; li = i; continue; } // a straight piece in between: no single point
+            }
+            if (xi === null) xi = FC.bisect((t) => D.d2(t, s.x0, s.x1), s.xs[li], s.xs[i], 60);
             const nearCorner = corners.some((c) => Math.abs(c.x - xi) < 3 * spacing) || maxima.concat(minima).some((m) => m.corner && Math.abs(m.x - xi) < 3 * spacing);
             if (!nearCorner && xi > s.x0 && xi < s.x1) { const y = fn(xi); if (isFinite(y)) inflections.push({ x: xi, y }); }
           }
@@ -376,6 +502,19 @@ var FCAnalysis = (function () {
             corners.push({ x: c.x, y: fn(c.x), leftSlope: c.leftSlope, rightSlope: c.rightSlope });
           }
         }
+      }
+    }
+    if (pw) {
+      for (const j of pw.joints) {
+        if (j.kind !== 'corner' || !segs.some((sg) => j.x > sg.x0 && j.x < sg.x1)) continue;
+        let merged = false;
+        for (let k = corners.length - 1; k >= 0; k--) {
+          if (Math.abs(corners[k].x - j.x) >= 3 * spacing) continue;
+          if (corners[k].isExtremum && !merged) { Object.assign(corners[k], { x: j.x, y: j.L, leftSlope: j.sL, rightSlope: j.sR, joint: true }); merged = true; }
+          else corners.splice(k, 1);
+        }
+        if (!merged) corners.push({ x: j.x, y: j.L, leftSlope: j.sL, rightSlope: j.sR, joint: true });
+        for (const m of maxima.concat(minima)) if (Math.abs(m.x - j.x) < 3 * spacing) { m.x = j.x; m.y = j.L; m.corner = true; }
       }
     }
     maxima.sort((p, q) => p.x - q.x); minima.sort((p, q) => p.x - q.x); inflections.sort((p, q) => p.x - q.x); corners.sort((p, q) => p.x - q.x);
@@ -435,6 +574,7 @@ var FCAnalysis = (function () {
     corners.forEach((m) => { if (!m.isExtremum) lm.push({ x: m.x, y: m.y, type: 'corner', data: m }); });
     if (out.yIntercept) lm.push({ x: 0, y: out.yIntercept.y, type: 'yint' });
     lm.push({ x: steep.x, y: steep.y, type: 'steepest', data: steep });
+    if (pw) for (const j of pw.joints) if ((j.kind === 'smooth' || j.kind === 'corner') && j.x > a && j.x < b) lm.push({ x: j.x, y: j.L, type: 'joint', data: j });
     lm.sort((p, q) => p.x - q.x);
     out.landmarks = lm;
 
@@ -624,6 +764,6 @@ var FCAnalysis = (function () {
     return zs;
   }
 
-  return { analyze, makeDerivs, findZeros, polyFacts, explainUndefined };
+  return { analyze, makeDerivs, findZeros, polyFacts, explainUndefined, pwCheck, pwDerivs };
 })();
 if (typeof module !== 'undefined') module.exports = FCAnalysis;

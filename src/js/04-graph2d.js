@@ -137,6 +137,8 @@ var FCGraph = (function () {
       this.drawSupports();
       this.drawTrack();
       this.drawFlights();
+      this.placed = [];
+      if (this.data.an.pw) this.drawPieceMarks();
       this.drawLandmarks();
       if (this.prediction !== null && this.prediction !== undefined) this.drawPrediction();
       if (this.sim) this.drawTrain();
@@ -255,11 +257,11 @@ var FCGraph = (function () {
           ctx.beginPath(); ctx.moveTo(xp, 0); ctx.lineTo(xp, this.H); ctx.stroke();
           ctx.setLineDash([]);
           this.label('asymptote', xp + 4, 14, '#c21f3d', 'left');
-        } else if (g.kind === 'undefined' && xb - xa > 3) {
+        } else if ((g.kind === 'undefined' || g.kind === 'nopiece') && xb - xa > 3) {
           ctx.fillStyle = 'rgba(255, 159, 67, 0.12)'; ctx.fillRect(xa, 0, xb - xa, this.H);
           ctx.strokeStyle = 'rgba(255, 159, 67, 0.35)'; ctx.lineWidth = 1;
           for (let x = xa - this.H; x < xb; x += 12) { ctx.beginPath(); ctx.moveTo(Math.max(x, xa), x < xa ? this.H - (xa - x) : this.H); ctx.lineTo(Math.min(x + this.H, xb), x + this.H > xb ? this.H - (xb - x) : 0); ctx.stroke(); }
-          if (xb - xa > 60) this.label('undefined', (xa + xb) / 2, 14, '#b35c00', 'center');
+          if (xb - xa > 60) this.label(g.kind === 'nopiece' ? 'no piece here' : 'undefined', (xa + xb) / 2, 14, '#b35c00', 'center');
         }
         ctx.restore();
       }
@@ -334,9 +336,15 @@ var FCGraph = (function () {
       ctx.restore();
     }
 
+    colorMode() { return this.opts.colorMode === 'plain' && this.data && this.data.an.pw ? 'pieces' : this.opts.colorMode; }
     colorAt(x, seg) {
-      const m = this.opts.colorMode;
+      const m = this.colorMode();
       const an = this.data.an;
+      if (m === 'pieces') {
+        const info = an.pw;
+        const p = info.pieceAt(x) || info.pieceAt(x - 1e-9 * (1 + Math.abs(x))) || info.pieceAt(x + 1e-9 * (1 + Math.abs(x)));
+        return p ? FC.pieceColor(p.k) : COLORS.rail;
+      }
       if (m === 'slope') {
         const d = an.d1(x, seg.x0, seg.x1);
         return !isFinite(d) || Math.abs(d) < 1e-9 ? '#7d8aa8' : d > 0 ? COLORS.up : COLORS.down;
@@ -383,7 +391,7 @@ var FCGraph = (function () {
         let runColor = null;
         ctx.beginPath();
         for (let i = 0; i < pts.length; i++) {
-          const c = this.opts.colorMode === 'plain' ? COLORS.rail : this.colorAt(i === 0 ? pts[0][2] : 0.5 * (pts[i][2] + pts[i - 1][2]), seg);
+          const c = this.colorMode() === 'plain' ? COLORS.rail : this.colorAt(i === 0 ? pts[0][2] : 0.5 * (pts[i][2] + pts[i - 1][2]), seg);
           if (i === 0) { runColor = c; ctx.moveTo(pts[0][0], pts[0][1]); continue; }
           if (c !== runColor) {
             ctx.lineTo(pts[i][0], pts[i][1]);
@@ -397,6 +405,7 @@ var FCGraph = (function () {
         ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 1.2; ctx.stroke();
         // segment end caps (gaps)
         const ends = [];
+        if (an.pw) continue; // piecewise tracks show open/closed endpoint dots instead
         if (seg.startKind !== 'domain') ends.push(pts[0]);
         if (seg.endKind !== 'domain') ends.push(pts[pts.length - 1]);
         for (const e of ends) {
@@ -481,7 +490,7 @@ var FCGraph = (function () {
 
     drawLandmarks() {
       const ctx = this.ctx, an = this.data.an;
-      const placed = [];
+      const placed = this.placed || [];
       // while riding, keep the area around the train clear for the slope/coordinate guides
       if (this.sim && this.riding) {
         const lead = this.sim.carPoses(1)[0];
@@ -515,6 +524,41 @@ var FCGraph = (function () {
       for (const z of an.zeros) if (vis(z.x, 0)) tryLabel('zero ' + coord({ x: z.x, y: 0 }), this.sx(z.x), this.sy(0), COLORS.zero, [[0, 20], [0, 38], [44, 20], [-44, 20], [0, -20]]);
       if (an.yIntercept && vis(0, an.yIntercept.y)) tryLabel('y-int ' + coord(an.yIntercept), this.sx(0), this.sy(an.yIntercept.y), COLORS.yint, [[-48, -16], [48, -16], [-48, 16], [48, 16], [0, -30]]);
       for (const m of an.inflections) if (vis(m.x, m.y)) tryLabel('inflection ' + coord(m), this.sx(m.x), this.sy(m.y), COLORS.infl, [[56, 0], [-56, 0], [0, -22], [0, 22]]);
+    }
+
+    /** Piecewise: numbered badge on each piece and open ○ / closed ● dots at every endpoint. */
+    drawPieceMarks() {
+      const ctx = this.ctx, an = this.data.an, info = an.pw;
+      const dots = [];
+      for (const p of info.pieces) {
+        const lo = Math.max(p.lo, an.a), hi = Math.min(p.hi, an.b);
+        if (!(hi > lo)) continue;
+        if (isFinite(p.lo) && p.lo >= an.a - 1e-9) { const y = p.f(p.lo); if (isFinite(y)) dots.push({ x: p.lo, y, filled: p.loIncl, k: p.k }); }
+        if (isFinite(p.hi) && p.hi <= an.b + 1e-9) { const y = p.f(p.hi); if (isFinite(y)) dots.push({ x: p.hi, y, filled: p.hiIncl, k: p.k }); }
+        // badge above the middle of the piece
+        const xm = (lo + hi) / 2, ym = p.f(xm);
+        if (!isFinite(ym)) continue;
+        const px = this.sx(xm), py = this.sy(ym) - 22;
+        if (px < 10 || px > this.W - 10 || py < 10 || py > this.H - 10) continue;
+        ctx.save();
+        ctx.beginPath(); ctx.arc(px, py, 10, 0, Math.PI * 2);
+        ctx.fillStyle = FC.pieceColor(p.k); ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.font = '800 12px Nunito, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(String(p.k + 1), px, py + 0.5);
+        ctx.restore();
+        this.placed.push({ x: px - 12, y: py - 12, w: 24, h: 24 });
+      }
+      // open dots first, so a closed dot at the same joint covers them
+      dots.sort((p, q) => (p.filled === q.filled ? 0 : p.filled ? 1 : -1));
+      for (const d of dots) {
+        const px = this.sx(d.x), py = this.sy(d.y);
+        if (px < -8 || px > this.W + 8 || py < -8 || py > this.H + 8) continue;
+        ctx.beginPath(); ctx.arc(px, py, 5.5, 0, Math.PI * 2);
+        ctx.fillStyle = d.filled ? FC.pieceColor(d.k) : '#fff'; ctx.fill();
+        ctx.lineWidth = 2.5; ctx.strokeStyle = d.filled ? '#fff' : FC.pieceColor(d.k); ctx.stroke();
+        if (d.filled) { ctx.beginPath(); ctx.arc(px, py, 7.5, 0, Math.PI * 2); ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(29,44,85,0.55)'; ctx.stroke(); }
+      }
     }
 
     drawPrediction() {
@@ -642,6 +686,7 @@ var FCGraph = (function () {
       if (tr) txt.push('1 unit = ' + FC.fmt(tr.Sx, 3) + ' m' + (tr.Sy !== tr.Sx ? ' across, ' + FC.fmt(tr.Sy, 3) + ' m up' : ''));
       const ux = (this.view.x1 - this.view.x0) / this.W, uy = (this.view.y1 - this.view.y0) / this.H;
       if (Math.abs(ux / uy - 1) > 0.03) txt.push('axes not to scale — try “1:1”');
+      if (this.colorMode() === 'pieces') txt.push('colors = pieces · ● included, ○ not included');
       if (this.opts.colorMode === 'slope') txt.push('green = increasing, red = decreasing');
       if (this.opts.colorMode === 'concavity') txt.push('blue = concave up ∪, orange = concave down ∩');
       if (this.opts.colorMode === 'speed') txt.push(this.speedProfile ? 'blue = slow → red = fast' : 'ride once to see speeds');

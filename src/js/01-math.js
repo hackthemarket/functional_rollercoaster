@@ -86,7 +86,18 @@ var FCMath = (function () {
   }
 
   // ---------------------------------------------------------------- parse
+  /** Parse a function: either one expression, or a piecewise function written {expr if cond; expr if cond}. */
   function parse(src) {
+    const inner = piecewiseInner(src);
+    if (inner !== null) return parsePiecewise(inner);
+    const t = String(src == null ? '' : src).trim();
+    const looksPW = /[<>≤≥;]/.test(t) || /\bif\b/i.test(t);
+    if (/^(?:[a-zA-Z]\s*\(\s*x\s*\)\s*=\s*)?\{/.test(t) && !/\}$/.test(t) && looksPW) return { ok: false, error: 'This looks like a piecewise function, but the closing brace } is missing at the end.' };
+    if (/\bif\b/i.test(t) && /[<>≤≥]/.test(t)) return { ok: false, error: 'For a piecewise function, wrap the pieces in braces: {2x if 0 <= x < 3; 6 if 3 <= x <= 5} — or switch to 🧩 Pieces.' };
+    return parseSingle(src);
+  }
+
+  function parseSingle(src) {
     const norm = normalize(src);
     if (!norm.trim()) return { ok: false, error: 'Type a function of x — for example  x^2 - 4' };
     let toks;
@@ -246,6 +257,117 @@ var FCMath = (function () {
     }
   }
 
+  // ---------------------------------------------------------------- piecewise functions
+  /** If src looks like {… if … ; …}, return the text inside the braces, else null. */
+  function piecewiseInner(src) {
+    let s = String(src == null ? '' : src);
+    s = s.replace(/[−–—‒]/g, '-').replace(/≤/g, '<=').replace(/≥/g, '>=').replace(/=</g, '<=').replace(/=>/g, '>=');
+    s = s.replace(/^\s*(?:[a-zA-Z]\s*\(\s*x\s*\)|y)\s*=\s*/, '').trim();
+    if (!(s.startsWith('{') && s.endsWith('}'))) return null;
+    const inner = s.slice(1, -1);
+    // braces used as plain parentheses, like {x + 1}·2, are not piecewise
+    if (!/[<>;]/.test(inner) && !/\b(?:if|for|when|where)\b/i.test(inner)) return null;
+    return inner;
+  }
+
+  function parsePiecewise(inner) {
+    const parts = inner.split(/;|\n/).map((t) => t.trim()).filter(Boolean);
+    if (!parts.length) return { ok: false, error: 'The braces are empty — add pieces like {2x if 0 <= x < 3; 6 if 3 <= x <= 5}' };
+    const pieces = [];
+    for (let k = 0; k < parts.length; k++) {
+      const label = 'Piece ' + (k + 1) + ': ';
+      const t = parts[k];
+      let exprText, condText;
+      const m = /^(.*?)\s*\b(?:if|for|when|where)\b\s*(.*)$/i.exec(t);
+      if (m) { exprText = m[1]; condText = m[2]; }
+      else {
+        // "expr, condition" — the last top-level comma (or colon) before a comparison
+        let depth = 0, cut = -1;
+        for (let i = 0; i < t.length; i++) {
+          const c = t[i];
+          if (c === '(' || c === '[') depth++;
+          else if (c === ')' || c === ']') depth--;
+          else if ((c === ',' || c === ':') && depth === 0 && /[<>]/.test(t.slice(i + 1))) cut = i;
+        }
+        if (cut < 0) return { ok: false, error: label + 'add a condition, like  2x + 1 if 0 <= x < 2', piece: k };
+        exprText = t.slice(0, cut); condText = t.slice(cut + 1);
+      }
+      if (!exprText.trim()) return { ok: false, error: label + 'the formula is missing before "if".', piece: k };
+      const r = parseSingle(exprText);
+      if (!r.ok) return { ok: false, error: label + r.error, piece: k };
+      const cond = parseCondition(condText);
+      if (!cond.ok) return { ok: false, error: label + cond.error, piece: k };
+      pieces.push({ ast: r.ast, lo: cond.lo, hi: cond.hi, src: exprText.trim() });
+    }
+    const node = { type: 'piecewise', pieces };
+    return { ok: true, ast: node, params: collectParams(node), piecewise: true };
+  }
+
+  /** "0 <= x < 2", "x >= 3", "2 < x", "x > 0 and x <= 4" → {lo:{ast,incl}, hi:{ast,incl}} */
+  function parseCondition(text) {
+    const s = String(text).trim().toLowerCase().replace(/≤/g, '<=').replace(/≥/g, '>=').replace(/=</g, '<=').replace(/=>/g, '>=');
+    if (!s) return { ok: false, error: 'the condition is empty — write something like 0 <= x < 2' };
+    let lo = null, hi = null;
+    for (const clause of s.split(/\band\b|&&|,/).map((c) => c.trim()).filter(Boolean)) {
+      const toks = clause.split(/(<=|>=|<|>)/).map((t) => t.trim());
+      if (toks.length < 3) return { ok: false, error: 'use < or ≤ to say which x values this piece covers, like 0 <= x < 2' };
+      for (let i = 0; i + 2 < toks.length; i += 2) {
+        const A = toks[i], op = toks[i + 1], B = toks[i + 2];
+        const aIsX = A === 'x', bIsX = B === 'x';
+        if (aIsX === bIsX) return { ok: false, error: aIsX ? 'x appears on both sides of "' + op + '"' : 'each comparison needs x, like 0 <= x < 2' };
+        const other = aIsX ? B : A;
+        if (!other) return { ok: false, error: 'a number is missing next to "' + op + '"' };
+        const r = parseSingle(other);
+        if (!r.ok) return { ok: false, error: '"' + other + '": ' + r.error };
+        if (containsVar(r.ast)) return { ok: false, error: 'the limits should be numbers, like 0 <= x < 2' };
+        const less = op === '<' || op === '<=';
+        const bound = { ast: r.ast, incl: op.length === 2 };
+        if (aIsX ? less : !less) { if (hi) return { ok: false, error: 'this piece has two upper limits' }; hi = bound; }
+        else { if (lo) return { ok: false, error: 'this piece has two lower limits' }; lo = bound; }
+      }
+    }
+    if (!lo && !hi) return { ok: false, error: 'the condition needs limits for x, like 0 <= x < 2' };
+    return { ok: true, lo, hi };
+  }
+
+  /** Evaluate the pieces' limits and build the combined function. */
+  function compilePW(node, P) {
+    const pieces = node.pieces.map((p, k) => {
+      const lo = p.lo ? evalConst(p.lo.ast, P) : -Infinity;
+      const hi = p.hi ? evalConst(p.hi.ast, P) : Infinity;
+      return { k, ast: p.ast, src: p.src, f: compile(p.ast, P), lo, hi, loIncl: p.lo ? p.lo.incl : false, hiIncl: p.hi ? p.hi.incl : false, coeffs: toPoly(p.ast, P) };
+    });
+    const sorted = pieces.slice().sort((A, B) => A.lo - B.lo || A.hi - B.hi);
+    const inPiece = (p, x) => (x > p.lo || (p.loIncl && x === p.lo)) && (x < p.hi || (p.hiIncl && x === p.hi));
+    const pieceAt = (x) => { for (const p of sorted) if (inPiece(p, x)) return p; return null; };
+    const fn = (x) => { for (const p of sorted) if (inPiece(p, x)) return p.f(x); return NaN; };
+    return { pieces, sorted, fn, pieceAt, inPiece };
+  }
+
+  function pwCondText(p) {
+    const lo = p.lo, hi = p.hi;
+    if (lo && hi) return toText(lo.ast) + (lo.incl ? ' <= ' : ' < ') + 'x' + (hi.incl ? ' <= ' : ' < ') + toText(hi.ast);
+    if (lo) return 'x' + (lo.incl ? ' >= ' : ' > ') + toText(lo.ast);
+    return 'x' + (hi.incl ? ' <= ' : ' < ') + toText(hi.ast);
+  }
+  function pwCondHTML(p) {
+    const lo = p.lo, hi = p.hi, X = '<i class="m-x">x</i>';
+    if (lo && hi) return toHTML(lo.ast) + (lo.incl ? ' ≤ ' : ' &lt; ') + X + (hi.incl ? ' ≤ ' : ' &lt; ') + toHTML(hi.ast);
+    if (lo) return X + (lo.incl ? ' ≥ ' : ' &gt; ') + toHTML(lo.ast);
+    return X + (hi.incl ? ' ≤ ' : ' &lt; ') + toHTML(hi.ast);
+  }
+  const BRACE_SVG = '<svg viewBox="0 0 12 100" preserveAspectRatio="none" aria-hidden="true"><path d="M10.5,1.5 C5.5,1.5 6.2,12 6.2,24 L6.2,40 C6.2,46.5 4.8,50 1.5,50 C4.8,50 6.2,53.5 6.2,60 L6.2,76 C6.2,88 5.5,98.5 10.5,98.5" fill="none" stroke="currentColor" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>';
+  function pwHTML(n, stacked) {
+    const dot = (k) => '<span class="m-pw-dot" style="background:' + FC.pieceColor(k) + '"></span>';
+    if (!stacked) {
+      return '<span class="m-pw-inline">{ ' + n.pieces.map((p, k) => '<span class="m-pw-piece">' + dot(k) + toHTML(p.ast) + ' <span class="m-pw-if">if</span> ' + pwCondHTML(p) + (k < n.pieces.length - 1 ? '<span class="m-pw-sep">;</span>' : '') + '</span>').join(' ') + ' }</span>';
+    }
+    return '<span class="m-pw"><span class="m-pw-brace">' + BRACE_SVG + '</span><span class="m-pw-rows">' +
+      n.pieces.map((p, k) => '<span class="m-pw-row">' + dot(k) + '<span class="m-pw-expr">' + toHTML(p.ast) + '</span><span class="m-pw-cond"><span class="m-pw-if">if</span> ' + pwCondHTML(p) + '</span></span>').join('') +
+      '</span></span>';
+  }
+  const mapPW = (pw, fn) => ({ type: 'piecewise', pieces: pw.pieces.map((p) => Object.assign({}, p, { ast: fn(p.ast) })) });
+
   function collectParams(ast) {
     const set = new Set();
     walk(ast, (n) => { if (n.type === 'param') set.add(n.name); });
@@ -259,6 +381,7 @@ var FCMath = (function () {
     if (n.base) walk(n.base, fn);
     if (n.exp) walk(n.exp, fn);
     if (n.args) n.args.forEach((a) => walk(a, fn));
+    if (n.pieces) n.pieces.forEach((p) => { walk(p.ast, fn); if (p.lo) walk(p.lo.ast, fn); if (p.hi) walk(p.hi.ast, fn); });
   }
   function containsVar(n) {
     let found = false;
@@ -294,6 +417,7 @@ var FCMath = (function () {
       case 'mul': { const a = compile(node.left, P), b = compile(node.right, P); return (x) => a(x) * b(x); }
       case 'div': { const a = compile(node.left, P), b = compile(node.right, P); return (x) => a(x) / b(x); }
       case 'pow': return compilePow(node, P);
+      case 'piecewise': return compilePW(node, P).fn;
       case 'func': {
         if (node.name === 'min' || node.name === 'max') {
           const a = compile(node.args[0], P), b = compile(node.args[1], P);
@@ -397,8 +521,10 @@ var FCMath = (function () {
     return null;
   }
 
-  function toHTML(n) {
+  /** opts.stacked: draw a piecewise function with a tall brace (one row per piece). */
+  function toHTML(n, opts) {
     switch (n.type) {
+      case 'piecewise': return pwHTML(n, opts && opts.stacked);
       case 'num': return numHTML(n.value);
       case 'var': return '<i class="m-x">x</i>';
       case 'param': return '<i class="m-param">' + n.name + '</i>';
@@ -450,6 +576,7 @@ var FCMath = (function () {
 
   function toText(n) {
     switch (n.type) {
+      case 'piecewise': return '{' + n.pieces.map((p) => toText(p.ast) + ' if ' + pwCondText(p)).join('; ') + '}';
       case 'num': return FC.numText(n.value);
       case 'var': return 'x';
       case 'param': return n.name;
@@ -516,6 +643,27 @@ var FCMath = (function () {
   function clone(n) { return JSON.parse(JSON.stringify(n)); }
   function substitute(n, repl) {
     if (n.type === 'var') return clone(repl);
+    if (n.type === 'piecewise') {
+      // g(x) = f(m·x + c): lo ≤ m·x + c < hi  ⇔  (lo − c)/m ≤ x < (hi − c)/m  (flipped when m < 0)
+      const lin = toPoly(repl, {});
+      const t = lin ? poly.trim(lin) : null;
+      if (!t || t.length !== 2 || t[1] === 0) throw new Error('Piecewise functions only support linear substitutions');
+      const c = t[0], m = t[1];
+      const mapB = (b) => {
+        if (!b) return null;
+        let ast;
+        if (collectParams(b.ast).length) ast = simplify(N.div(N.sub(clone(b.ast), N.num(c)), N.num(m)));
+        else ast = N.num(Number(((evalConst(b.ast, {}) - c) / m).toPrecision(12)));
+        return { ast, incl: b.incl };
+      };
+      return {
+        type: 'piecewise',
+        pieces: n.pieces.map((p) => {
+          const lo = mapB(p.lo), hi = mapB(p.hi);
+          return Object.assign({}, p, { ast: substitute(p.ast, repl), lo: m > 0 ? lo : hi, hi: m > 0 ? hi : lo });
+        }).sort((A, B) => (A.lo && B.lo ? evalConst(A.lo.ast, {}) - evalConst(B.lo.ast, {}) : 0)),
+      };
+    }
     const out = Object.assign({}, n);
     if (n.left) out.left = substitute(n.left, repl);
     if (n.right) out.right = substitute(n.right, repl);
@@ -530,8 +678,14 @@ var FCMath = (function () {
     const s = (m) => simplify(m);
     let out;
     switch (n.type) {
+      case 'piecewise': return mapPW(n, s);
       case 'add': case 'sub': case 'mul': case 'div': {
         const L = s(n.left), R = s(n.right);
+        // f(x) + 2, 3·f(x), … on a piecewise function → apply to every piece
+        if ((L.type === 'piecewise') !== (R.type === 'piecewise')) {
+          const pw = L.type === 'piecewise' ? L : R;
+          return mapPW(pw, (a) => s({ type: n.type, left: L === pw ? a : clone(L), right: R === pw ? a : clone(R) }));
+        }
         if (L.type === 'num' && R.type === 'num') {
           const v = n.type === 'add' ? L.value + R.value : n.type === 'sub' ? L.value - R.value : n.type === 'mul' ? L.value * R.value : L.value / R.value;
           if (isFinite(v) && (n.type !== 'div' || Number.isInteger(v))) return N.num(v);
@@ -567,6 +721,7 @@ var FCMath = (function () {
       }
       case 'neg': {
         const A = s(n.arg);
+        if (A.type === 'piecewise') return mapPW(A, (a) => s(N.neg(a)));
         if (A.type === 'num') return N.num(-A.value);
         if (A.type === 'neg') return A.arg;
         if (A.type === 'mul' && A.left.type === 'num') return N.mul(N.num(-A.left.value), A.right);
@@ -574,6 +729,7 @@ var FCMath = (function () {
       }
       case 'pow': {
         const B = s(n.base), E = s(n.exp);
+        if (B.type === 'piecewise' && E.type !== 'piecewise') return mapPW(B, (a) => s(N.pow(a, clone(E))));
         if (E.type === 'num' && E.value === 1) return B;
         if (E.type === 'num' && E.value === 0) return N.num(1);
         if (B.type === 'num' && E.type === 'num' && Number.isInteger(E.value)) return N.num(Math.pow(B.value, E.value));
@@ -582,6 +738,7 @@ var FCMath = (function () {
       case 'func': {
         const out2 = Object.assign({}, n, { args: n.args.map(s) });
         if (n.base) out2.base = s(n.base);
+        if (out2.args.length === 1 && out2.args[0].type === 'piecewise') return mapPW(out2.args[0], (a) => Object.assign({}, out2, { args: [a] }));
         return out2;
       }
       default: return n;
@@ -875,6 +1032,10 @@ var FCMath = (function () {
   }
 
   function classify(ast, P, coeffs) {
+    if (ast && ast.type === 'piecewise') {
+      const n = ast.pieces.length;
+      return { family: 'piecewise', name: 'piecewise', label: 'Piecewise · ' + n + (n === 1 ? ' piece' : ' pieces'), pieceFamilies: ast.pieces.map((p) => classify(p.ast, P, toPoly(p.ast, P))) };
+    }
     if (coeffs) {
       const d = poly.degree(coeffs);
       const names = ['constant', 'linear', 'quadratic', 'cubic', 'quartic', 'quintic'];
@@ -914,6 +1075,7 @@ var FCMath = (function () {
   return {
     parse, compile, evalConst, evalConstExpr, toHTML, toText, toPoly, poly, classify, sinusoid, absForm, expForm,
     containsVar, collectParams, substitute, simplify, clone, N, normalize, walk, CONSTS,
+    parseSingle, parseCondition, compilePW, pwCondText, pwCondHTML, isPW: (ast) => !!ast && ast.type === 'piecewise',
   };
 })();
 if (typeof module !== 'undefined') module.exports = FCMath;

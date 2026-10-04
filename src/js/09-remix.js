@@ -39,9 +39,21 @@ var FCRemix = (function () {
   /** Evaluate a candidate track: analysis + physics forecast. */
   function evaluate(ast, a, b, P, settings, maxT = 150) {
     try {
+      // piecewise: push outer operations into the pieces; the pieces set the domain
+      let hasPW = false;
+      M.walk(ast, (n) => { if (n.type === 'piecewise') hasPW = true; });
+      let pw = null;
+      if (hasPW) {
+        if (ast.type !== 'piecewise') ast = M.simplify(ast);
+        pw = FCAnalysis.pwCheck(ast, P);
+        if (pw.errors.length) return { ok: false, error: pw.errors[0].msg };
+        const lo = Math.min(...pw.info.pieces.map((q) => q.lo)), hi = Math.max(...pw.info.pieces.map((q) => q.hi));
+        if (isFinite(lo)) a = lo;
+        if (isFinite(hi)) b = hi;
+      }
       const fn = M.compile(ast, P);
       const coeffs = M.toPoly(ast, P);
-      const an = FCAnalysis.analyze({ fn, a, b, coeffs, ast, P, samples: 1200 });
+      const an = FCAnalysis.analyze({ fn, a, b, coeffs, ast, P, pw, samples: 1200 });
       if (!an.ok) return { ok: false, error: an.error };
       const S = settings.scale === 'auto' ? FCPhysics.autoScale(an) : +settings.scale;
       const Sy = settings.vScale === 'same' || !settings.vScale ? S : +settings.vScale;
@@ -171,7 +183,8 @@ var FCRemix = (function () {
     const w = b - a;
     const ops = [];
     const nOps = 1 + (rnd() < 0.55 ? 1 : 0);
-    const bag = ['stretchH', 'stretchH', 'stretchV', 'wiggle', 'shift', 'tilt', 'domain', 'flip'];
+    const isPW = base.ast.type === 'piecewise';
+    const bag = isPW ? ['stretchH', 'stretchH', 'stretchV', 'stretchV', 'wiggle', 'shift', 'tilt'] : ['stretchH', 'stretchH', 'stretchV', 'wiggle', 'shift', 'tilt', 'domain', 'flip'];
     if (base.coeffs && !hasParams) bag.push('coef', 'coef');
     for (let i = 0; i < nOps; i++) {
       const op = FC.pick(rnd, bag);
@@ -312,5 +325,44 @@ var FCRemix = (function () {
     return best;
   }
 
-  return { transforms, evaluate, sparkSVG, thumbSVG, safeStretch, thrillLab, surprise, textOf, isSafe, score, niceNum, scaledX };
+  // -------------------------------------------------------------- Surprise me (piecewise)
+  /**
+   * A classic 4-piece coaster with smooth joints: lift ramp → parabolic crest → straight drop → pull-out.
+   * Heights and slopes match at every joint by construction, and it starts and ends on the ground.
+   */
+  function genPW(rnd) {
+    const m = FC.pick(rnd, [0.75, 1, 1.25, 1.5]);
+    const L = FC.pick(rnd, [4, 5, 6, 8]);
+    const W = FC.pick(rnd, [4, 5, 8, 10]);
+    const Q = FC.pick(rnd, [4, 5, 8, 10].filter((q) => q / 2 < L));
+    const D = L - Q / 2;
+    const n = (v) => FC.numText(Number(v.toPrecision(6)));
+    const y1 = m * L, x1 = L, x2 = L + W, x3 = x2 + D, x4 = x3 + Q;
+    const c = m / W;
+    const lin = (y0, x0, sl) => n(y0) + (sl < 0 ? ' - ' : ' + ') + (Math.abs(sl) === 1 ? '' : n(Math.abs(sl))) + '(x - ' + n(x0) + ')';
+    const pieces = [
+      (m === 1 ? '' : n(m)) + 'x if 0 <= x < ' + n(x1),
+      lin(y1, x1, m) + ' - ' + n(c) + '(x - ' + n(x1) + ')^2 if ' + n(x1) + ' <= x < ' + n(x2),
+    ];
+    if (D > 0) pieces.push(lin(y1, x2, -m) + ' if ' + n(x2) + ' <= x < ' + n(x3));
+    pieces.push(n(m / (2 * Q)) + '(x - ' + n(x4) + ')^2 if ' + n(x3) + ' <= x <= ' + n(x4));
+    return { f: '{' + pieces.join('; ') + '}', a: '', b: '' };
+  }
+  async function surprisePW(settings) {
+    const rnd = FC.rng((Date.now() * 7919) >>> 0);
+    let best = null;
+    for (let i = 0; i < 8; i++) {
+      const g = genPW(rnd);
+      const r = M.parse(g.f);
+      if (!r.ok) continue;
+      const ev = evaluate(r.ast, 0, 1, {}, settings);
+      if (!ev.ok) continue;
+      const sc = score(ev) + (rnd() < 0.25 ? rnd() * 3 : 0);
+      if (!best || sc > best.sc) best = Object.assign(g, { sc, ev });
+      await new Promise((res) => setTimeout(res, 0));
+    }
+    return best;
+  }
+
+  return { transforms, evaluate, sparkSVG, thumbSVG, safeStretch, thrillLab, surprise, surprisePW, genPW, textOf, isSafe, score, niceNum, scaledX };
 })();

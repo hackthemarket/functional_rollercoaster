@@ -29,8 +29,13 @@
       <div class="brand-text"><span class="b1">Function</span><span class="b2">Coaster</span></div>
     </div>
     <form id="fnForm" class="fn-form" autocomplete="off">
+      <div class="seg mode-seg" id="modeSeg" role="group" aria-label="Kind of track">
+        <button type="button" data-mode="single" class="on" title="One formula for the whole track">ƒ<span class="txt-wide"> One function</span></button>
+        <button type="button" data-mode="pieces" title="Build the track from pieces (a piecewise function)">🧩<span class="txt-wide"> Pieces</span></button>
+      </div>
       <div class="fn-field">
         <label for="fnInput" class="fx">f(<i>x</i>)&nbsp;=</label>
+        <button type="button" id="pwSummary" class="pw-summary" hidden title="Edit the pieces"></button>
         <input id="fnInput" class="fn-input" type="text" spellcheck="false" autocapitalize="off" autocorrect="off" aria-describedby="fnPreview" value="-2x^4 + 7x^3 - 4x^2 - 0.5x + 1">
         <button type="button" id="btnKeypad" class="icon-btn subtle" title="Math symbols keypad" aria-label="Math symbols keypad">√x</button>
       </div>
@@ -70,6 +75,7 @@
             <div><span class="k"><i>x</i></span><span id="hudX" class="v">0</span></div>
             <div><span class="k">height <i>f</i>(<i>x</i>)</span><span id="hudY" class="v">0</span></div>
             <div><span class="k">slope</span><span id="hudSlope" class="v">0</span></div>
+            <div id="hudPieceRow" hidden><span class="k">piece</span><span id="hudPiece" class="v"></span></div>
           </div>
           <div class="gmeter" title="G-force you feel in your seat. 1 G = normal. Below 0 = airtime (floating). Above 4 = heavy!">
             <div class="gm-scale"><div class="gm-zone z-red1"></div><div class="gm-zone z-air"></div><div class="gm-zone z-ok"></div><div class="gm-zone z-heavy"></div><div class="gm-zone z-red2"></div><div id="gmNeedle" class="gm-needle"></div></div>
@@ -136,12 +142,14 @@
 
     <aside class="sidebar">
       <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="pieces" id="tabBtnPieces" hidden>🧩 Pieces</button>
         <button role="tab" data-tab="blueprint" class="on">📐 Blueprint</button>
         <button role="tab" data-tab="remix">🧬 Remix</button>
         <button role="tab" data-tab="missions">🏅 Missions <span id="missionBadge" class="badge"></span></button>
         <button role="tab" data-tab="garage">🗂️ Garage</button>
       </nav>
       <div class="tab-panels">
+        <section id="tab-pieces" class="tab-panel" role="tabpanel"></section>
         <section id="tab-blueprint" class="tab-panel on" role="tabpanel"></section>
         <section id="tab-remix" class="tab-panel" role="tabpanel"></section>
         <section id="tab-missions" class="tab-panel" role="tabpanel"></section>

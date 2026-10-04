@@ -76,7 +76,8 @@ var FCPhysics = (function () {
     const span = seg.cum[hi] - seg.cum[lo];
     const t = span > 0 ? (s - seg.cum[lo]) / span : 0;
     const x = seg.xs[lo] + (seg.xs[hi] - seg.xs[lo]) * t;
-    let y = fn(x);
+    // a segment's end points come from its own side of a jump (one-sided limits), so read them from the table
+    let y = x >= seg.x1 ? seg.Y[n - 1] / Sy : x <= seg.x0 ? seg.Y[0] / Sy : fn(x);
     if (!isFinite(y)) y = (seg.Y[lo] + (seg.Y[hi] - seg.Y[lo]) * t) / Sy;
     let p = track.an.d1(x, seg.x0, seg.x1);
     if (!isFinite(p)) p = ((seg.Y[hi] - seg.Y[lo]) / Sy) / ((seg.xs[hi] - seg.xs[lo]) || 1e-12);

@@ -21,6 +21,21 @@ var FCContent = (function () {
     { name: 'Camelback Parade', f: '3cos(0.3x) + 0.1x + 4', a: '0', b: '42', tags: ['trig', 'linear'], blurb: 'A cosine riding on a tilted line: the midline is y = 0.1x + 4. Big, smooth camelback hills.' },
   ];
 
+  /** Piecewise examples: f is written in the app's piecewise syntax. a/b are filled in from the pieces. */
+  const PW_PRESETS = [
+    { name: 'Tangent Ramp', f: '{0.5x^2 if 0 <= x < 2; 2x - 2 if 2 <= x < 4; -0.5(x - 6)^2 + 8 if 4 <= x <= 10}', tags: ['smooth joints', 'tangent line'], blurb: 'A curve, then its tangent line, then a parabola. Every joint matches in height AND slope, so the ride is smooth.' },
+    { name: 'Smooth Operator', f: '{x if 0 <= x < 4; -0.125(x - 8)^2 + 6 if 4 <= x < 12; -x + 16 if 12 <= x < 14; 0.125(x - 18)^2 if 14 <= x <= 18}', tags: ['4 pieces', 'smooth', 'ground to ground'], blurb: 'Lift ramp, parabolic hill, straight drop, pull-out valley. Built the way real coasters are: every joint smooth.' },
+    { name: 'Linear Zigzag', f: '{2x if 0 <= x < 3; -x + 9 if 3 <= x < 6; 0.75x - 1.5 if 6 <= x < 8; -1.5x + 16.5 if 8 <= x <= 11}', tags: ['linear pieces', 'corners'], blurb: 'Every joint connects… but straight pieces always meet at sharp corners. Ouch! Can you smooth them out?' },
+    { name: 'Stair Steps', f: '{6 if 0 <= x < 2; 4 if 2 <= x < 4; 2 if 4 <= x < 6; 0 if 6 <= x <= 8}', tags: ['step function', 'jumps'], blurb: 'Constant pieces make a step function. Each joint is a jump discontinuity — the train hops down the stairs.' },
+    { name: 'Find k!', f: '{x^2 if 0 <= x < 2; k - x if 2 <= x <= 6}', params: { k: 1 }, tags: ['find k', 'continuity'], blurb: 'Drag the k slider until the pieces connect. Hint: set the two formulas equal at x = 2.' },
+    { name: 'Tangent Takeoff', f: '{0.5x^2 if 0 <= x < 2; k*x - 2 if 2 <= x <= 4}', params: { k: 1 }, tags: ['find k', 'smooth'], blurb: 'Which k makes the straight piece continue the curve smoothly? (It\'s the tangent line!) Then enjoy the jump off the end.' },
+    { name: 'Absolute V', f: '{-2x + 6 if 0 <= x < 3; 2x - 6 if 3 <= x <= 6}', tags: ['absolute value', 'corner'], blurb: 'This is 2|x − 3| written as two pieces. Absolute value IS a piecewise function.' },
+    { name: 'Gap Jump', f: '{-0.5x + 6 if 0 <= x < 6; -0.5x + 5 if 8 <= x <= 10}', tags: ['gap', 'flight'], blurb: 'No piece covers 6 < x < 8. Will the train fly far enough to land on the next piece?' },
+    { name: 'Mix & Match', f: '{0.125x^2 if 0 <= x < 4; x - 2 if 4 <= x < 6; 4 + 2sin(0.5(x - 6)) if 6 <= x < 6 + 2pi; 0.0625(x - 14 - 2pi)^2 if 6 + 2pi <= x <= 14 + 2pi}', tags: ['quadratic', 'linear', 'sine', 'smooth'], blurb: 'Three different kinds of functions, joined smoothly — even the sine wave starts with the right slope.' },
+    { name: 'Stairway Crash', f: '{1 if 0 <= x < 2; 2 if 2 <= x < 4; 3 if 4 <= x <= 6}', tags: ['step function', 'crash'], blurb: 'Stairs going UP. A coaster can fly down a jump… but what happens at a step up?' },
+  ];
+  PW_PRESETS.forEach((p) => { p.piecewise = true; p.a = ''; p.b = ''; });
+
   // ctx = { an, poly, ride (stats), ratings, meta, fnText }
   const MISSIONS = [
     { id: 'first-ride', icon: '🎢', title: 'First Ride', concept: 'Getting started', desc: 'Ride any track all the way to the end.', hint: 'Press ▶ Ride! If the train gets stuck, try the ⛓️ chain lift start.', when: 'ride', check: (c) => c.ride && c.ride.reachedEnd },
@@ -51,7 +66,16 @@ var FCContent = (function () {
     { id: 'slider', icon: '🎚️', title: 'Slider Scientist', concept: 'Families of functions', desc: 'Use a parameter letter (like a, h or k) and drag its slider.', hint: 'Type a(x − h)^2 + k — sliders appear for a, h and k.', when: 'build', check: (c) => c.meta.usedSlider },
     { id: 'fortune', icon: '🔮', title: 'Fortune Teller', concept: 'Energy & height', desc: 'Predict where the coaster will be fastest — within 5% of the track\'s width.', hint: 'Turn on 🔮 Predict first. Think about energy: where is the track lowest after the biggest drop?', when: 'ride', check: (c) => c.meta.predictionGreat },
     { id: 'gentle', icon: '🌱', title: 'Gentle Giant', concept: 'Slope', desc: 'Build a hill at least 4 units tall where every slope stays between −1 and 1 (never steeper than 45°).', hint: 'Slope = rise ÷ run. Stretch a hill horizontally — like −0.05(x − 10)^2 + 5 — to make every slope smaller.', when: 'build', check: (c) => c.an.maxima.length >= 1 && c.an.yMax - c.an.yMin >= 4 && Math.abs(c.an.steepest.slope) <= 1 && !c.an.gaps.length },
-    { id: 'match-5', icon: '🧩', title: 'Track Matcher', concept: 'Graph ↔ equation', desc: 'Complete 5 Match-the-Track challenges.', hint: 'Look for key points: vertex, zeros, y-intercept. Then choose a form that shows them.', when: 'any', check: (c) => c.meta.matchesDone >= 5 },
+    { id: 'match-5', icon: '🎯', title: 'Track Matcher', concept: 'Graph ↔ equation', desc: 'Complete 5 Match-the-Track challenges.', hint: 'Look for key points: vertex, zeros, y-intercept. Then choose a form that shows them.', when: 'any', check: (c) => c.meta.matchesDone >= 5 },
+    // ---- piecewise
+    { id: 'pw-3', icon: '🧩', title: 'Piece by Piece', concept: 'Piecewise functions', desc: 'Build a coaster from at least 3 pieces.', hint: 'Switch to 🧩 Pieces at the top and press ＋ Add a piece.', when: 'build', check: (c) => c.an.pw && c.an.pw.pieces.length >= 3 },
+    { id: 'pw-connected', icon: '🔗', title: 'Seamless', concept: 'Continuity', desc: 'Every joint connects: each piece starts at the height where the one before it ends.', hint: 'Plug the joint x into both formulas — the answers must match. The joint checker turns green ✓ when they do.', when: 'build', check: (c) => c.an.pw && c.an.joints.length >= 1 && c.an.joints.every((j) => j.kind === 'smooth' || j.kind === 'corner') },
+    { id: 'pw-smooth', icon: '🧈', title: 'Butter Smooth', concept: 'Smooth joints', desc: 'Every joint connects AND has matching slopes on both sides — no sharp corners.', hint: 'A line that continues a curve smoothly is its tangent line. Try the Tangent Ramp example.', when: 'build', check: (c) => c.an.pw && c.an.joints.length >= 1 && c.an.joints.every((j) => j.kind === 'smooth') },
+    { id: 'pw-steps', icon: '🪜', title: 'Stair Master', concept: 'Step functions', desc: 'Build a step function: at least 3 pieces that are all constants.', hint: 'Constant pieces like 6, 4, 2 make flat steps.', when: 'build', check: (c) => c.an.pw && c.an.pw.pieces.length >= 3 && c.an.pw.pieces.every((p) => p.coeffs && FCMath.poly.degree(p.coeffs) === 0) },
+    { id: 'pw-k', icon: '🔑', title: 'The Missing k', concept: 'Solving for continuity', desc: 'Use a letter like k in a piece and choose its value so that every joint connects.', hint: 'Load the “Find k!” example. Set both formulas equal at the joint and solve for k.', when: 'build', check: (c) => c.an.pw && c.params.length > 0 && c.an.joints.length >= 1 && c.an.joints.every((j) => j.kind === 'smooth' || j.kind === 'corner') },
+    { id: 'pw-leap', icon: '🦘', title: 'Leap of Faith', concept: 'Jump discontinuities', desc: 'Ride a piecewise coaster that flies over a jump or a gap and lands on the next piece.', hint: 'Make a piece end higher than the next one starts — or leave a gap between pieces.', when: 'ride', check: (c) => c.an.pw && c.ride && c.ride.flights.some((f) => f.landing === 'track') },
+    { id: 'pw-safe', icon: '🏗️', title: 'Master Builder', concept: 'Piecewise design', desc: 'A coaster with 3+ pieces that passes the Safety Inspector: excitement 5+, max ≤ 5 G, min ≥ −1.5 G, no corners.', hint: 'Smooth joints are a must. Start from Smooth Operator and make it your own.', when: 'ride', check: (c) => c.an.pw && c.an.pw.pieces.length >= 3 && c.ride && c.ratings && c.ratings.excitement >= 5 && c.ride.maxG <= 5 && c.ride.minG >= -1.5 && !c.ride.cornerHits && c.ride.reachedEnd },
+    { id: 'pw-mix', icon: '🎭', title: 'Mix & Match', concept: 'Function families', desc: 'Use at least 3 different kinds of functions in one piecewise coaster (like linear + quadratic + sine).', hint: 'Families: linear, quadratic, cubic, exponential, sine/cosine, square root, absolute value…', when: 'build', check: (c) => c.an.pw && new Set(c.an.family.pieceFamilies.map((f) => f.name === 'sinusoidal' ? 'trigonometric' : f.name)).size >= 3 },
   ];
 
   const MATCHES = [
@@ -69,6 +93,10 @@ var FCContent = (function () {
     { id: 'm12', name: 'Sine Wave', f: '2sin(x) + 2', a: 0, b: 2 * Math.PI, concept: 'Amplitude & midline', hint: 'Midline y = 2, amplitude 2, period 2π.', keys: [[Math.PI / 2, 4], [3 * Math.PI / 2, 0], [0, 2]] },
     { id: 'm13', name: 'Fast Wave', f: '3sin(2x) + 3', a: 0, b: 2 * Math.PI, concept: 'Period', hint: 'Two full waves in 2π, so the period is π. Period = 2π ÷ B.', keys: [[Math.PI / 4, 6], [3 * Math.PI / 4, 0]] },
     { id: 'm14', name: 'Mystery Quartic', f: '0.25(x^2 - 1)(x^2 - 4)', a: -2.2, b: 2.2, concept: 'Even quartic', hint: 'Zeros at ±1 and ±2; y-intercept 1.', keys: [[-2, 0], [-1, 0], [1, 0], [2, 0], [0, 1]] },
+    { id: 'p1', name: 'Ramp & Plateau', f: '{x if 0 <= x < 3; 3 if 3 <= x <= 6}', a: 0, b: 6, concept: 'Piecewise: linear + constant', hint: 'Two pieces: a slope-1 ramp up to (3, 3), then flat. Switch to 🧩 Pieces.', keys: [[0, 0], [3, 3], [6, 3]] },
+    { id: 'p2', name: 'Staircase', f: '{3 if 0 <= x < 2; 2 if 2 <= x < 4; 1 if 4 <= x <= 6}', a: 0, b: 6, concept: 'Step function', hint: 'Three constant pieces. Each step is 2 wide and 1 lower.', keys: [[0, 3], [2, 2], [4, 1]] },
+    { id: 'p3', name: 'Rest Stop', f: '{-x + 4 if 0 <= x < 2; 2 if 2 <= x < 5; 0.5x - 0.5 if 5 <= x <= 9}', a: 0, b: 9, concept: 'Piecewise linear', hint: 'Down with slope −1, flat at height 2, then up with slope ½. All joints connect.', keys: [[0, 4], [2, 2], [5, 2], [9, 4]] },
+    { id: 'p4', name: 'Up & Over', f: '{2x if 0 <= x < 2; -(x - 3)^2 + 5 if 2 <= x <= 5}', a: 0, b: 5, concept: 'Piecewise: linear + quadratic', hint: 'A straight climb, then a parabola with vertex (3, 5). They meet smoothly at (2, 4).', keys: [[0, 0], [2, 4], [3, 5], [5, 1]] },
   ];
 
   const GLOSSARY = {
@@ -100,6 +128,12 @@ var FCContent = (function () {
     factored: ['Factored form', 'a(x − r₁)(x − r₂)… — read the zeros r₁, r₂, … straight off the factors.'],
     sinusoid: ['Sinusoid', 'A·sin(B(x − C)) + D: amplitude |A|, period 2π ÷ |B|, midline y = D, phase shift C.'],
     exponential: ['Exponential function', 'a·bˣ multiplies by b every time x goes up by 1. b > 1: growth; 0 < b < 1: decay. It has a horizontal asymptote.'],
+    piecewise: ['Piecewise function', 'A function made of pieces. Each piece has its own formula and its own interval of x-values, like f(x) = {2x if 0 ≤ x < 3; 6 if 3 ≤ x ≤ 5}. On a coaster, each piece is one section of track.'],
+    continuity: ['Continuous joint', 'The track connects: the left piece ends at the same height where the right piece starts. In math words, the limit from the left equals the limit from the right (and the function value). No jump!'],
+    smoothjoint: ['Smooth joint', 'Connected AND the same slope on both sides, so there is no sharp corner. Real coaster track must be smooth — a corner would mean an instant change of direction.'],
+    endpoints: ['Open and closed dots', 'A closed dot ● means the endpoint is included (≤). An open dot ○ means it is not (<). Each x must belong to exactly one piece, so neighbors usually share a joint with one ≤ and one <.'],
+    evaluatepw: ['Evaluating a piecewise function', 'First find the piece whose condition your x fits. Then plug x into THAT piece\'s formula only.'],
+    stepfn: ['Step function', 'A piecewise function made of flat (constant) pieces. It looks like stairs, and every joint is a jump.'],
     flight: ['Projectile flight', 'When the track ends in mid-air, the coaster flies along a parabola until it lands — the landing spot is a zero of that parabola.'],
     curvature: ['Curvature & G', 'At a valley, G ≈ 1 + 2·(drop height)·f″(x) in graph units. Tighter curves (bigger f″) and bigger drops mean bigger G-forces — no matter how large you build it!'],
   };
@@ -108,6 +142,7 @@ var FCContent = (function () {
     polynomial: ['Polynomial', 'Turning', 'Rolling', 'Wild'], quadratic: ['Parabolic', 'Vertex', 'Quadratic'], cubic: ['Cubic', 'Triple', 'Twisting'], quartic: ['Quartic', 'Double-Dip', 'Four-Fold'],
     quintic: ['Quintic', 'Five-Alarm'], linear: ['Linear', 'Straight-Shot'], constant: ['Flatline', 'Level'], trig: ['Sine-ister', 'Wavy', 'Tidal', 'Periodic'], exp: ['Exponential', 'Rocket'],
     log: ['Logarithmic'], root: ['Radical', 'Root'], abs: ['Absolute', 'V-Twin'], rational: ['Asymptotic', 'Rational'], step: ['Stair-Step', 'Floor'], other: ['Mystery', 'Mighty', 'Mega'],
+    piecewise: ['Patchwork', 'Piece-by-Piece', 'Puzzle', 'Modular', 'Mosaic', 'Stitched'],
   };
   const NOUNS = ['Serpent', 'Thunder', 'Comet', 'Viper', 'Cyclone', 'Dragon', 'Phoenix', 'Twister', 'Falcon', 'Stampede', 'Tempest', 'Blitz', 'Voyager', 'Screamer', 'Nova', 'Mamba', 'Avalanche', 'Rattler', 'Kraken', 'Meteor', 'Mustang', 'Griffin', 'Tornado', 'Rocket'];
   function nameFor(fnText, family) {
@@ -120,5 +155,7 @@ var FCContent = (function () {
     return 'The ' + FC.pick(rnd, ADJ[key]) + ' ' + FC.pick(rnd, NOUNS);
   }
 
-  return { PRESETS, MISSIONS, MATCHES, GLOSSARY, nameFor };
+  /** A ready-made 3-piece track for students switching to piecewise mode. */
+  const PW_STARTER = PW_PRESETS[0];
+  return { PRESETS, PW_PRESETS, PW_STARTER, MISSIONS, MATCHES, GLOSSARY, nameFor };
 })();

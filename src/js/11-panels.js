@@ -60,7 +60,8 @@ App.panels = (function () {
     // name + family
     h += '<div class="name-row"><input class="name-input" id="bpName" maxlength="40" aria-label="Coaster name" value="' + esc(s.name || '') + '"><span class="fam-badge">' + esc(fam.label) + '</span></div>';
     // function card
-    h += '<div class="card"><div class="big-fn">f(<i>x</i>) = ' + FCMath.toHTML(s.parsed.ast) + '</div><div class="alt-forms">';
+    const isPW = !!an.pw;
+    h += '<div class="card"><div class="big-fn">f(<i>x</i>) = ' + FCMath.toHTML(s.parsed.ast, { stacked: isPW }) + '</div><div class="alt-forms">';
     if (pi && pi.degree >= 1) {
       const std = FCMath.poly.toHTML(pi.coeffs, 4);
       h += '<div><span>Standard form</span><span class="math">' + std + '</span></div>';
@@ -85,6 +86,8 @@ App.panels = (function () {
       if (stdText.replace(/\s/g, '') !== s.fText.replace(/\s/g, '')) h += '<div class="row" style="margin-top:8px"><button class="btn btn-small btn-ghost" data-act="standard">✏️ Rewrite in standard form</button></div>';
     }
     h += '</div>';
+
+    if (isPW) h += pwBlueprintCard();
 
     // track facts
     const tileGround = Math.max(1, an.yMax - an.yMin) * 2e-3;
@@ -285,11 +288,13 @@ App.panels = (function () {
     h += '</div></div>';
     // thrill lab
     h += '<div class="card"><h3>🧪 Thrill Lab</h3><p class="note">The lab invents mutations of your track, test-rides each one with real physics, and shows the most exciting ones that are also safe.</p><div class="lab-row"><button class="btn btn-small btn-purple" data-act="lab">🧪 Run the lab</button><span class="gen" id="labStatus"></span></div><div id="labOut"></div></div>';
-    // domain tools
-    h += '<div class="card"><h3>📐 Domain tools ' + what('domain') + '</h3><div class="row">';
-    h += '<button class="btn btn-small btn-ghost" data-act="snap">⤓0 Snap ends to zeros</button>';
-    if (state.an.maxima.length + state.an.minima.length) h += '<button class="btn btn-small btn-ghost" data-act="zoom-turns">🔍 Fit around the hills</button>';
-    h += '<button class="btn btn-small btn-ghost" data-act="widen">↔ Longer ride (+50%)</button></div></div>';
+    // domain tools (a piecewise track's domain comes from its pieces instead)
+    if (!state.an.pw) {
+      h += '<div class="card"><h3>📐 Domain tools ' + what('domain') + '</h3><div class="row">';
+      h += '<button class="btn btn-small btn-ghost" data-act="snap">⤓0 Snap ends to zeros</button>';
+      if (state.an.maxima.length + state.an.minima.length) h += '<button class="btn btn-small btn-ghost" data-act="zoom-turns">🔍 Fit around the hills</button>';
+      h += '<button class="btn btn-small btn-ghost" data-act="widen">↔ Longer ride (+50%)</button></div></div>';
+    }
     // presets
     h += '<div class="card"><h3>📚 Track library</h3><div class="preset-list">';
     FCContent.PRESETS.forEach((p, i) => {
@@ -304,6 +309,7 @@ App.panels = (function () {
       h += '<button class="preset" data-preset="' + i + '">' + svg + '<span><div class="pn">' + esc(p.name) + '</div><div class="pf">' + (p._html || esc(p.f)) + '</div><div class="pt">' + p.tags.map((t) => '<span class="pill">' + esc(t) + '</span>').join('') + '</div></span></button>';
     });
     h += '</div></div>';
+    h += '<div class="card"><h3>🧩 Piecewise coasters</h3><div class="preset-list">' + pwPresetList() + '</div></div>';
     host.innerHTML = h;
     host.scrollTop = scroll;
     paintLab();
@@ -323,11 +329,19 @@ App.panels = (function () {
       acts.push(['🚀 Find the launch speed', 'min-launch']);
       tips.push({ i: '🔋', h: '<b>Not enough energy:</b> with ' + modeName(f.mode) + ' the train ' + why + '. A hill higher than the starting energy can\'t be climbed — energy is conserved (and friction steals some).', a: acts });
     }
+    if (an.pw && an.joints.length) {
+      const bad = an.joints.filter((j) => j.kind !== 'smooth');
+      if (bad.length) tips.push({ i: '🧩', h: '<b>Joints to fix:</b> ' + bad.map((j) => j.kind === 'gap' ? 'a gap after piece ' + (j.left + 1) : j.kind + ' at x = ' + fmt(j.x, 3)).join(', ') + '. Smooth joints need the same height AND the same slope on both sides.', a: [['🧩 Open the pieces', 'open-pieces']] });
+      else tips.push({ i: '🧈', h: '<b>All joints are smooth</b> — the pieces meet at the same height and slope. Pro coaster design!', a: [] });
+    }
     const heightRange = Math.max(1e-9, an.yMax - Math.min(an.yMin, 0));
     const endsAir = !(Math.abs(an.end.y) <= Math.max(1.5 / s.track.Sy, 0.03 * heightRange) || an.end.y < 0);
-    if (endsAir) tips.push({ i: '🛬', h: '<b>Ends in mid-air</b> at height ' + fmt(an.end.y, 3) + '. The coaster will fly off along a parabola! For a smooth landing, end the track at a zero instead.', a: [['⤓0 Snap ends to zeros', 'snap']] });
+    if (endsAir) {
+      if (an.pw) tips.push({ i: '🛬', h: '<b>Ends in mid-air</b> at height ' + fmt(an.end.y, 3) + '. The coaster will fly off along a parabola! For a smooth landing, make the last piece end at height 0.', a: [] });
+      else tips.push({ i: '🛬', h: '<b>Ends in mid-air</b> at height ' + fmt(an.end.y, 3) + '. The coaster will fly off along a parabola! For a smooth landing, end the track at a zero instead.', a: [['⤓0 Snap ends to zeros', 'snap']] });
+    }
     if (an.yMax < 0) tips.push({ i: '🚇', h: '<b>The whole ride is underground</b> (every output is negative). Raise it: add a constant, like <i>f</i>(<i>x</i>) + ' + fmt(FCRemix.niceNum(-an.yMin), 3) + '.', a: [['⬆️ Raise it', 'raise']] });
-    if (an.corners.length) {
+    if (an.corners.length && !an.pw) {
       const af = an.absForm;
       tips.push({ i: '💥', h: '<b>Sharp corner</b> at <i>x</i> = ' + fmt(an.corners[0].x, 3) + '. Real track must be smooth — the slope can\'t jump.' + (af ? ' Swap |<i>x</i> − ' + fmt(af.h, 3) + '| for √((<i>x</i> − ' + fmt(af.h, 3) + ')² + 0.5): a smooth V (it\'s a hyperbola!).' : ''), a: af ? [['✨ Smooth the V', 'smooth-abs']] : [] });
     }
@@ -394,6 +408,359 @@ App.panels = (function () {
     }).join('') || '<div class="note">No luck this time — run it again!</div>';
     state._labView = { key, status, html };
     paintLab();
+  }
+
+  // ---------------------------------------------------------------- Pieces tab (piecewise editor)
+  const OPS = { '<=': '≤', '<': '&lt;' };
+  function rowsFromAST(ast) {
+    return ast.pieces.map((p) => ({
+      f: p.src || FCMath.toText(p.ast),
+      lo: p.lo ? FCMath.toText(p.lo.ast) : '',
+      loOp: p.lo && !p.lo.incl ? '<' : '<=',
+      hiOp: p.hi && p.hi.incl ? '<=' : '<',
+      hi: p.hi ? FCMath.toText(p.hi.ast) : '',
+    }));
+  }
+  function rowsToText(rows) {
+    return '{' + rows.map((r) => {
+      const lo = String(r.lo).trim(), hi = String(r.hi).trim();
+      let cond = '';
+      if (lo && hi) cond = lo + ' ' + r.loOp + ' x ' + r.hiOp + ' ' + hi;
+      else if (lo) cond = 'x ' + (r.loOp === '<=' ? '>=' : '>') + ' ' + lo;
+      else if (hi) cond = 'x ' + r.hiOp + ' ' + hi;
+      return String(r.f).trim() + (cond ? ' if ' + cond : '');
+    }).join('; ') + '}';
+  }
+  function showTab(name, scroll) {
+    $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
+    $$('.tab-panel').forEach((p) => p.classList.toggle('on', p.id === 'tab-' + name));
+    if (name === 'pieces') renderPieces();
+    if (name === 'remix' && remixDirty) renderRemix();
+    if (name === 'garage') renderGarage();
+    if (name === 'missions') renderMissions();
+    if (scroll && innerWidth <= 980) $('.sidebar').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  /** Called by build(): keep the editor rows in step with the function that was built. */
+  function syncPieces(ast, chk, fromEditor) {
+    if (!fromEditor) state.pieces = rowsFromAST(ast);
+    if ($('#tab-pieces').classList.contains('on')) { if (fromEditor) renderPiecesStatus(chk, ast); else renderPieces(); }
+  }
+  function opSelect(field, val) {
+    return '<select class="pw-op" data-field="' + field + '" aria-label="' + (field === 'loOp' ? 'start: included or not' : 'end: included or not') + '">' +
+      Object.keys(OPS).map((o) => '<option value="' + o + '"' + (o === val ? ' selected' : '') + '>' + OPS[o] + '</option>').join('') + '</select>';
+  }
+  function renderPieces() {
+    const host = $('#tab-pieces');
+    const rows = state.pieces || [];
+    let h = '<div class="card"><h3>🧩 Piecewise coaster ' + what('piecewise') + '</h3><div class="pw-big" id="pwBig"></div>' +
+      '<p class="note">Each piece is one section of track, with its own formula and its own x-values. Neighbors should meet at the same height (<b>connected</b>) and the same slope (<b>smooth</b>). ' + what('smoothjoint') + '</p></div>';
+    h += '<div class="pw-errors" id="pwErrors"></div><div class="pw-list" id="pwList">';
+    rows.forEach((r, k) => {
+      h += '<div class="pw-row" data-k="' + k + '" style="--pc:' + FC.pieceColor(k) + '">' +
+        '<div class="pw-top"><span class="pw-num">' + (k + 1) + '</span><span class="pw-fx">f(<i>x</i>) =</span>' +
+        '<input class="pw-f" data-field="f" value="' + esc(r.f) + '" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Piece ' + (k + 1) + ' formula">' +
+        '<button class="pw-del" data-pwdel="' + k + '" title="Remove this piece" aria-label="Remove piece ' + (k + 1) + '">🗑</button></div>' +
+        '<div class="pw-bot"><span>for</span><input class="pw-lim" data-field="lo" value="' + esc(r.lo) + '" spellcheck="false" aria-label="Piece ' + (k + 1) + ' starts at">' +
+        opSelect('loOp', r.loOp) + '<i>x</i>' + opSelect('hiOp', r.hiOp) +
+        '<input class="pw-lim" data-field="hi" value="' + esc(r.hi) + '" spellcheck="false" aria-label="Piece ' + (k + 1) + ' ends at">' +
+        what('endpoints') + '<span class="pw-msg" id="pwMsg' + k + '"></span></div></div>' +
+        '<div class="pw-joint" id="pwJoint' + k + '" hidden></div>';
+    });
+    h += '</div><div class="row"><button class="btn btn-small btn-ghost" data-act="pw-add">＋ Add a piece</button><button class="btn btn-small btn-build" data-act="pw-build">🔨 Build track</button></div>';
+    h += '<div class="card" style="margin-top:12px"><h3>🔍 Evaluate ' + what('evaluatepw') + '</h3><div class="pw-eval">f( <input id="pwEvalX" value="' + esc(state.pwEvalX || '') + '" placeholder="x" spellcheck="false" aria-label="x value to evaluate"> ) = ?</div><div class="pw-eval-out" id="pwEvalOut"></div></div>';
+    h += '<div class="card"><h3>📚 Piecewise examples</h3><div class="preset-list">' + pwPresetList() + '</div></div>';
+    host.innerHTML = h;
+    liveCheck();
+    evalPW();
+  }
+  function pwPresetList() {
+    return FCContent.PW_PRESETS.map((p, i) => {
+      let svg = '', html = esc(p.f);
+      try {
+        const r = FCMath.parse(p.f);
+        const fn = FCMath.compile(r.ast, p.params || {});
+        const info = FCMath.compilePW(r.ast, p.params || {});
+        const a = Math.min(...info.pieces.map((q) => q.lo)), b = Math.max(...info.pieces.map((q) => q.hi));
+        svg = FCRemix.sparkSVG([{ fn, a, b, color: '#ffd166', width: 2 }], 70, 40);
+        html = FCMath.toHTML(r.ast);
+      } catch (e) { /* show the text */ }
+      return '<button class="preset" data-pwpreset="' + i + '">' + svg + '<span><div class="pn">🧩 ' + esc(p.name) + '</div><div class="pf">' + html + '</div><div class="pt">' + p.tags.map((t) => '<span class="pill">' + esc(t) + '</span>').join('') + '</div></span></button>';
+    }).join('');
+  }
+  let liveTimer = null;
+  function scheduleLive() { clearTimeout(liveTimer); liveTimer = setTimeout(() => { liveCheck(); evalPW(); }, 160); }
+  /** Re-read the rows, update the main input, and check every joint (without building). */
+  function liveCheck() {
+    const rows = state.pieces || [];
+    const text = rowsToText(rows);
+    el.fnInput.value = text;
+    App.renderPreview();
+    rows.forEach((r, k) => { const m = $('#pwMsg' + k); if (m) m.textContent = ''; const row = $('.pw-row[data-k="' + k + '"]'); if (row) row.classList.remove('err'); const j = $('#pwJoint' + k); if (j) j.hidden = true; });
+    const errBox = $('#pwErrors');
+    if (errBox) errBox.innerHTML = '';
+    const r = FCMath.parse(text);
+    const big = $('#pwBig');
+    if (!r.ok) {
+      if (r.piece !== undefined && $('#pwMsg' + r.piece)) {
+        $('#pwMsg' + r.piece).textContent = '⚠️ ' + r.error.replace(/^Piece \d+: /, '');
+        $('.pw-row[data-k="' + r.piece + '"]').classList.add('err');
+      } else if (errBox) errBox.innerHTML = '<div class="callout bad">⚠️ ' + esc(r.error) + '</div>';
+      return null;
+    }
+    const P = Object.assign({}, state.params);
+    r.params.forEach((n) => { if (P[n] === undefined) P[n] = 1; });
+    const chk = FCAnalysis.pwCheck(r.ast, P);
+    if (big) big.innerHTML = 'f(<i>x</i>) = ' + FCMath.toHTML(r.ast, { stacked: true });
+    renderPiecesStatus(chk, r.ast, P);
+    return chk;
+  }
+  function renderPiecesStatus(chk, ast, P) {
+    P = P || state.params;
+    const errBox = $('#pwErrors');
+    if (!errBox) return;
+    errBox.innerHTML = chk.errors.map((e) => {
+      let fix = '';
+      if (e.kind === 'overlap') fix = '<button data-pwfix="trim" data-a="' + e.pieces[0] + '" data-b="' + e.pieces[1] + '">✂️ End piece ' + (e.pieces[0] + 1) + ' where piece ' + (e.pieces[1] + 1) + ' starts</button>';
+      if (e.kind === 'double') fix = '<button data-pwfix="open" data-a="' + e.pieces[0] + '">Make piece ' + (e.pieces[0] + 1) + ' end with &lt;</button>';
+      if (e.kind === 'empty') fix = '<button data-pwfix="swap" data-a="' + e.pieces[0] + '">↔ Swap its start and end</button>';
+      e.pieces.forEach((k) => { const row = $('.pw-row[data-k="' + k + '"]'); if (row) row.classList.add('err'); });
+      return '<div class="callout bad"><span>✋ ' + esc(e.msg) + (fix ? '<div class="pw-joint" style="border:0;margin:6px 0 0;padding:0"><div class="ja">' + fix + '</div></div>' : '') + '</span></div>';
+    }).join('');
+    for (const j of chk.joints) {
+      const box = $('#pwJoint' + j.left);
+      if (!box) continue;
+      box.hidden = false;
+      box.className = 'pw-joint ' + j.kind;
+      box.innerHTML = jointEditorHTML(j, ast, P);
+    }
+  }
+  function jointEditorHTML(j, ast, P) {
+    const x = fmt(j.x, 4), tagL = App.pieceTag(j.left), tagR = App.pieceTag(j.right);
+    if (j.kind === 'gap') {
+      return '<span class="jt">↔ Gap: no piece covers ' + fmt(j.x0, 4) + ' &lt; <i>x</i> &lt; ' + fmt(j.x1, 4) + '</span><span>The train will have to fly across from ' + tagL + ' to ' + tagR + '!</span>' +
+        '<div class="ja"><button data-pwfix="extend" data-a="' + j.left + '" data-b="' + j.right + '">Stretch ' + (j.left + 1) + ' to x = ' + fmt(j.x1, 4) + '</button></div>';
+    }
+    if (j.kind === 'undefined') return '<span class="jt">✗ A piece is undefined at x = ' + x + '</span><span>Check its formula there (square roots of negatives, dividing by zero…).</span>';
+    if (j.kind === 'smooth') {
+      return '<span class="jt">✓ Smooth joint at x = ' + x + '</span><span>' + tagL + ' ends and ' + tagR + ' starts at height <b>' + fmt(j.L, 4) + '</b>, both with slope <b>' + fmt(j.sL, 3) + '</b>.' +
+        (j.exact ? '' : ' (They differ by ' + fmt(Math.abs(j.dy), 3) + ' — close enough for the track.)') +
+        (j.hole ? ' But neither piece includes x = ' + x + ' (both use &lt;), so f(' + x + ') is undefined — a hole!' : '') + '</span>';
+    }
+    if (j.kind === 'corner') {
+      return '<span class="jt">⚠ Connected at x = ' + x + ' — but it\'s a corner</span><span>Same height <b>' + fmt(j.L, 4) + '</b> ✓, but the slope jumps from <b>' + fmt(j.sL, 3) + '</b> to <b>' + fmt(j.sR, 3) + '</b>. Riders feel a jolt! For a smooth joint the slopes must match.</span>';
+    }
+    // jump
+    const dy = j.L - j.R;
+    let acts = '<button data-pwfix="shift" data-a="' + j.right + '" data-dy="' + dy + '">' + (dy > 0 ? '⬆ Move ' : '⬇ Move ') + (j.right + 1) + (dy > 0 ? ' up ' : ' down ') + fmt(Math.abs(dy), 4) + '</button>';
+    const meet = crossingNear(ast, P, j);
+    if (meet !== null) acts += '<button data-pwfix="meet" data-a="' + j.left + '" data-b="' + j.right + '" data-x="' + meet + '">↔ Move the joint to x ≈ ' + fmt(meet, 4) + ' (where they cross)</button>';
+    const solve = solveForParam(ast, P, j);
+    let solveHTML = '';
+    if (solve) {
+      const sub = (k) => FCMath.toHTML(FCMath.substitute(ast.pieces[k].ast, FCMath.N.num(j.x)));
+      solveHTML = '<span>🔑 To connect, both formulas must give the same height at x = ' + x + ':</span><span class="eq">' + sub(j.left) + ' = ' + sub(j.right) + '</span>';
+      acts += '<button data-pwfix="solve" data-p="' + solve.name + '" data-v="' + solve.value + '">Show me ' + solve.name + '</button>';
+    }
+    return '<span class="jt">✗ Jump at x = ' + x + '</span><span>' + tagL + ' ends at height <b>' + fmt(j.L, 4) + '</b>, but ' + tagR + ' starts at <b>' + fmt(j.R, 4) + '</b> — off by ' + fmt(Math.abs(j.dy), 4) + '. The train will ' + (j.R < j.L ? 'fly off and drop down' : 'slam into a wall') + '!</span>' + solveHTML + '<div class="ja">' + acts + '</div>';
+  }
+  /** Where do the two neighboring formulas cross near the joint? (Moving the joint there connects them.) */
+  function crossingNear(ast, P, j) {
+    try {
+      const fa = FCMath.compile(ast.pieces[j.left].ast, P), fb = FCMath.compile(ast.pieces[j.right].ast, P);
+      const g = (x) => fa(x) - fb(x);
+      const info = FCMath.compilePW(ast, P);
+      const A = info.pieces[j.left], B = info.pieces[j.right];
+      const lo = isFinite(A.lo) ? A.lo : j.x - 10, hi = isFinite(B.hi) ? B.hi : j.x + 10;
+      let best = null;
+      const n = 400;
+      let px = lo, pg = g(lo);
+      for (let i = 1; i <= n; i++) {
+        const x = lo + ((hi - lo) * i) / n, gx = g(x);
+        if (isFinite(pg) && isFinite(gx) && pg * gx <= 0) {
+          const root = pg === 0 ? px : FC.brent(g, px, x);
+          if (isFinite(root) && root > lo && root < hi && (best === null || Math.abs(root - j.x) < Math.abs(best - j.x))) best = root;
+        }
+        px = x; pg = gx;
+      }
+      if (best === null || Math.abs(best - j.x) < 1e-6) return null;
+      return Number(best.toPrecision(6));
+    } catch (e) { return null; }
+  }
+  /** If one letter (like k) appears in the two pieces, find the value that makes them meet. */
+  function solveForParam(ast, P, j) {
+    const names = Array.from(new Set(FCMath.collectParams(ast.pieces[j.left].ast).concat(FCMath.collectParams(ast.pieces[j.right].ast))));
+    if (names.length !== 1) return null;
+    const name = names[0];
+    const Q = Object.assign({}, P);
+    const fa = FCMath.compile(ast.pieces[j.left].ast, Q), fb = FCMath.compile(ast.pieces[j.right].ast, Q);
+    const g = (v) => { Q[name] = v; return fa(j.x) - fb(j.x); };
+    let best = null, pv = -50, pg = g(-50);
+    for (let i = 1; i <= 2000; i++) {
+      const v = -50 + i * 0.05, gv = g(v);
+      if (isFinite(pg) && isFinite(gv) && pg * gv <= 0) {
+        const root = pg === 0 ? pv : FC.brent(g, pv, v);
+        if (isFinite(root) && (best === null || Math.abs(root - P[name]) < Math.abs(best - P[name]))) best = root;
+      }
+      pv = v; pg = gv;
+    }
+    if (best === null) return null;
+    return { name, value: Number(best.toPrecision(8)) };
+  }
+  function evalPW() {
+    const out = $('#pwEvalOut'), inp = $('#pwEvalX');
+    if (!out || !inp) return;
+    const txt = inp.value.trim();
+    state.pwEvalX = txt;
+    if (!txt) { out.innerHTML = '<span class="note">Type an x value. You\'ll see which piece it uses and the height there.</span>'; return; }
+    const r = FCMath.parse(el.fnInput.value);
+    if (!r.ok || r.ast.type !== 'piecewise') { out.textContent = ''; return; }
+    const P = Object.assign({}, state.params);
+    r.params.forEach((n) => { if (P[n] === undefined) P[n] = 1; });
+    const xv = FCMath.evalConstExpr(txt, P);
+    if (!xv.ok) { out.textContent = '⚠️ ' + xv.error; return; }
+    const x = xv.value;
+    const info = FCMath.compilePW(r.ast, P);
+    const p = info.pieceAt(x);
+    if (!p) {
+      const touching = info.pieces.filter((q) => q.lo === x || q.hi === x);
+      let why = 'no piece\'s condition includes it';
+      if (touching.length >= 2) why = 'it\'s exactly where two pieces meet, but both use &lt; there (open dots ○) — a hole';
+      else if (x < Math.min(...info.pieces.map((q) => q.lo)) || x > Math.max(...info.pieces.map((q) => q.hi))) why = 'it\'s outside the track\'s domain';
+      out.innerHTML = 'No piece covers <i>x</i> = ' + fmt(x, 4) + ', so <b><i>f</i>(' + fmt(x, 4) + ') is undefined</b> — ' + why + '.';
+      return;
+    }
+    const pa = r.ast.pieces[p.k];
+    const y = p.f(x);
+    const other = info.pieces.find((q) => q !== p && (q.lo === x || q.hi === x));
+    let note = '';
+    if (other) note = '<br><span class="note">x = ' + fmt(x, 4) + ' is also an endpoint of piece ' + (other.k + 1) + ', but that piece uses &lt; there (open dot ○), so it doesn\'t count.</span>';
+    const step = FCMath.containsVar(pa.ast) ? FCMath.toHTML(FCMath.substitute(pa.ast, FCMath.N.num(x))) + ' = ' : '';
+    out.innerHTML = '<i>x</i> = ' + fmt(x, 4) + ' fits piece ' + App.pieceTag(p.k) + ' (' + FCMath.pwCondHTML(pa) + ')<br><span class="math"><i>f</i>(' + fmt(x, 4) + ') = ' + step + '<b>' + fmt(y, 4) + '</b></span>' + note;
+    if (state.graph && isFinite(y) && state.an && x >= state.an.a && x <= state.an.b) { state.graph.pulse = { x, y, t0: performance.now() }; state.graph.dirty = true; }
+  }
+  /** Build from the editor rows (sorted left to right). */
+  function buildFromPieces() {
+    const rows = state.pieces || [];
+    const key = (r) => { const v = FCMath.evalConstExpr(r.lo, state.params); return v.ok ? v.value : -Infinity; };
+    const sorted = rows.map((r, i) => ({ r, i, k: key(r) })).sort((p, q) => p.k - q.k || p.i - q.i).map((o) => o.r);
+    const moved = sorted.some((r, i) => r !== rows[i]);
+    state.pieces = sorted;
+    el.fnInput.value = rowsToText(sorted);
+    if (moved) { renderPieces(); App.toast('↕️ I put the pieces in order from left to right.'); }
+    const ok = App.build({ fromEditor: true });
+    if (ok) renderPieces();
+    return ok;
+  }
+  function addPiece() {
+    const rows = state.pieces || (state.pieces = []);
+    const last = rows[rows.length - 1];
+    if (!last) { rows.push({ f: 'x', lo: '0', loOp: '<=', hiOp: '<=', hi: '4' }); renderPieces(); return; }
+    const P = Object.assign({}, state.params);
+    const hiV = FCMath.evalConstExpr(last.hi, P), loV = FCMath.evalConstExpr(last.lo, P);
+    const width = hiV.ok && loV.ok ? Math.max(1, hiV.value - loV.value) : 4;
+    let endY = 0;
+    const r = FCMath.parseSingle(last.f);
+    if (r.ok && hiV.ok) { const y = FCMath.compile(r.ast, P)(hiV.value); if (isFinite(y)) endY = Number(y.toPrecision(5)); }
+    last.hiOp = '<';
+    const start = hiV.ok ? FC.numText(hiV.value, 6) : last.hi;
+    const end = hiV.ok ? FC.numText(hiV.value + width, 6) : '';
+    rows.push({ f: FC.numText(endY, 5), lo: start, loOp: '<=', hiOp: '<=', hi: end });
+    renderPieces();
+    const inputs = $$('#pwList .pw-f');
+    if (inputs.length) { const f = inputs[inputs.length - 1]; f.focus(); f.select(); }
+    App.toast('＋ New piece ' + rows.length + ' starts where the last one ends, at the same height (' + fmt(endY, 4) + ') — so it connects. Now give it a formula!', '', 5500);
+  }
+  function applyFix(btn) {
+    const d = btn.dataset, rows = state.pieces;
+    const A = rows[+d.a], B = d.b !== undefined ? rows[+d.b] : null;
+    switch (d.pwfix) {
+      case 'shift': {
+        const r = FCMath.parseSingle(A.f);
+        if (!r.ok) return;
+        A.f = FCMath.toText(FCMath.simplify(FCMath.N.add(r.ast, FCMath.N.num(Number((+d.dy).toPrecision(10))))));
+        App.state.meta.pendingMutation = true;
+        break;
+      }
+      case 'meet': A.hi = B.lo = FC.numText(+d.x, 6); break;
+      case 'extend': A.hi = B.lo; A.hiOp = '<'; B.loOp = '<='; break;
+      case 'trim': A.hi = B.lo; A.hiOp = '<'; break;
+      case 'open': A.hiOp = '<'; break;
+      case 'swap': { const t = A.lo; A.lo = A.hi; A.hi = t; break; }
+      case 'solve': {
+        if (!confirm('Try to solve it yourself first! Show the answer anyway?')) return;
+        App.state.params[d.p] = +d.v;
+        App.renderParamBar();
+        App.toast('🔑 ' + d.p + ' = ' + fmt(+d.v, 6) + ' makes the pieces meet. Check it: plug it into both formulas at the joint!', '', 6500);
+        App.state.meta.usedSlider = true;
+        break;
+      }
+    }
+    buildFromPieces();
+  }
+  function bindPieces() {
+    const host = $('#tab-pieces');
+    host.addEventListener('input', (e) => {
+      const t = e.target;
+      if (t.id === 'pwEvalX') { evalPW(); return; }
+      const row = t.closest('.pw-row');
+      if (!row || !t.dataset.field) return;
+      state.pieces[+row.dataset.k][t.dataset.field] = t.value;
+      scheduleLive();
+    });
+    host.addEventListener('change', (e) => {
+      const t = e.target, row = t.closest('.pw-row');
+      if (row && t.tagName === 'SELECT') { state.pieces[+row.dataset.k][t.dataset.field] = t.value; liveCheck(); }
+    });
+    host.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target.closest('.pw-row')) { e.preventDefault(); buildFromPieces(); }
+    });
+    host.addEventListener('focusin', (e) => { if (e.target.classList.contains('pw-f')) state.lastPieceInput = e.target; });
+    host.addEventListener('click', (e) => {
+      const del = e.target.closest('[data-pwdel]');
+      if (del) {
+        if (state.pieces.length <= 1) { App.toast('A piecewise track needs at least one piece. Switch to ƒ One function to use a single formula.'); return; }
+        state.pieces.splice(+del.dataset.pwdel, 1);
+        renderPieces();
+        return;
+      }
+      const fix = e.target.closest('[data-pwfix]');
+      if (fix) { applyFix(fix); return; }
+      const act = e.target.closest('[data-act]');
+      if (act && act.dataset.act === 'pw-add') addPiece();
+      if (act && act.dataset.act === 'pw-build') buildFromPieces();
+    });
+  }
+
+  // ---------------------------------------------------------------- piecewise Blueprint card
+  function pwBlueprintCard() {
+    const an = state.an, info = an.pw, ast = state.parsed.ast;
+    const ys = Math.max(1, an.yMax - an.yMin);
+    let h = '<div class="card"><h3>🧩 Pieces & joints ' + what('piecewise') + '</h3><div class="piece-list">';
+    info.sorted.forEach((p) => {
+      const fam = an.family.pieceFamilies[p.k] || { label: '' };
+      const lo = isFinite(p.lo) ? Math.max(p.lo, an.a) : an.a, hi = isFinite(p.hi) ? Math.min(p.hi, an.b) : an.b;
+      h += '<div class="piece-item">' + App.pieceTag(p.k) + '<span><span class="math">' + FCMath.toHTML(p.ast) + '</span> for ' + FCMath.pwCondHTML(ast.pieces[p.k]) +
+        '<br>' + esc(fam.label) + ' · from (' + fmt(lo, 3) + ', ' + FC.fmtZ(p.f(lo), ys, 3) + ') to (' + fmt(hi, 3) + ', ' + FC.fmtZ(p.f(hi), ys, 3) + ')</span></div>';
+    });
+    h += '</div><h4>Joints ' + what('continuity') + '</h4><div class="joint-list">';
+    for (const j of an.joints) h += '<div class="joint-item">' + jointBlueprintHTML(j) + '</div>';
+    if (!an.joints.length) h += '<div class="note">Just one piece so far — add more in the 🧩 Pieces tab.</div>';
+    h += '</div>';
+    const n = (k) => an.joints.filter((j) => j.kind === k).length;
+    if (an.joints.length && n('smooth') === an.joints.length) h += '<div class="callout good">🧈 <span>Every joint is <b>connected and smooth</b> — that\'s exactly how real coaster track is designed.</span></div>';
+    else if (an.joints.length) h += '<div class="callout info">🔧 <span>' + [n('jump') && n('jump') + ' jump' + (n('jump') > 1 ? 's' : ''), n('gap') && n('gap') + ' gap' + (n('gap') > 1 ? 's' : ''), n('corner') && n('corner') + ' corner' + (n('corner') > 1 ? 's' : '')].filter(Boolean).join(', ') + '. Fix them in the 🧩 Pieces tab — or ride it and see what happens!</span></div>';
+    return h + '</div>';
+  }
+  function jointBlueprintHTML(j) {
+    const x = fmt(j.x, 4);
+    if (j.kind === 'gap') return '<b>Gap</b> for ' + fmt(j.x0, 4) + ' &lt; <i>x</i> &lt; ' + fmt(j.x1, 4) + ': no piece covers these x-values, so <i>f</i> is undefined there. <span class="warn">The train must fly across.</span>';
+    if (j.kind === 'undefined') return '<b>At x = ' + x + '</b>: a piece is undefined here. <span class="bad">✗</span>';
+    let h = '<b>At x = ' + x + '</b> (' + App.pieceTag(j.left) + ' → ' + App.pieceTag(j.right) + '): from the left the track reaches <b>' + fmt(j.L, 4) + '</b>; from the right it starts at <b>' + fmt(j.R, 4) + '</b>. ';
+    if (j.kind === 'jump') h += '<span class="bad">✗ Not continuous: a jump of ' + fmt(Math.abs(j.dy), 4) + '.</span>';
+    else h += '<span class="ok">✓ Continuous.</span> Slopes: ' + fmt(j.sL, 3) + ' (left), ' + fmt(j.sR, 3) + ' (right) → ' + (j.kind === 'smooth' ? '<span class="ok">✓ smooth</span>' : '<span class="warn">⚠ corner</span>') + '.';
+    if (j.hole) h += ' <span class="warn">Neither piece includes x = ' + x + ' (open dots ○), so f(' + x + ') is undefined — a hole.</span>';
+    else h += ' <i>f</i>(' + x + ') = ' + fmt(j.rightIncl ? j.R : j.L, 4) + ' (piece ' + ((j.rightIncl ? j.right : j.left) + 1) + ' includes it ●).';
+    return h;
   }
 
   // ---------------------------------------------------------------- Missions
@@ -506,7 +873,7 @@ App.panels = (function () {
     openModal('<h2>' + esc(G[0]) + '</h2><p>' + esc(G[1]) + '</p><div class="modal-actions"><button class="btn btn-small btn-ghost" data-act="help-gloss">📖 All math words</button></div>');
   }
   function syntaxHTML() {
-    const rows = [['x squared', 'x^2  or  x²'], ['times', '2x   3(x+1)   (x-1)(x+2)'], ['divide', '1/(x+2)'], ['square root', 'sqrt(x)  or  √x'], ['absolute value', '|x - 3|  or  abs(x-3)'], ['π and e', 'pi   e^x   2^x'], ['trig (radians)', 'sin(x)   cos(2x)   tan(x)'], ['logs', 'ln(x)   log(x)   log_2(x)'], ['rounding', 'floor(x)   ceil(x)   round(x)'], ['sliders!', 'a(x - h)^2 + k   a sin(b x)']];
+    const rows = [['piecewise (or use 🧩 Pieces)', '{2x if 0 <= x < 3; 6 if 3 <= x <= 5}'], ['x squared', 'x^2  or  x²'], ['times', '2x   3(x+1)   (x-1)(x+2)'], ['divide', '1/(x+2)'], ['square root', 'sqrt(x)  or  √x'], ['absolute value', '|x - 3|  or  abs(x-3)'], ['π and e', 'pi   e^x   2^x'], ['trig (radians)', 'sin(x)   cos(2x)   tan(x)'], ['logs', 'ln(x)   log(x)   log_2(x)'], ['rounding', 'floor(x)   ceil(x)   round(x)'], ['sliders!', 'a(x - h)^2 + k   a sin(b x)']];
     return '<div class="syntax">' + rows.map((r) => '<div><span>' + esc(r[0]) + '</span><code>' + esc(r[1]) + '</code></div>').join('') + '</div>';
   }
   function showHelp(section) {
@@ -514,12 +881,14 @@ App.panels = (function () {
     h += '<div class="steps"><div class="step"><div class="n">1</div><b>Type a function</b><p>Like <code>-2x^4 + 7x^3 - 4x^2 - 0.5x + 1</code>. The line under the box shows how it was read.</p></div><div class="step"><div class="n">2</div><b>Pick the domain</b><p>“from x = … to …” is where the track starts and ends. Ends on zeros = smooth landings.</p></div><div class="step"><div class="n">3</div><b>Build & ride!</b><p>Press 🔨 Build, then ▶ Ride. Study the 📐 Blueprint, remix it 🧬, and earn badges 🏅.</p></div></div>';
     h += '<h3>⌨️ Typing functions</h3>' + syntaxHTML();
     h += '<p>Keys: <code>Space</code> ride / pause · <code>R</code> reset · <code>1</code>–<code>4</code> cameras · <code>M</code> sound · <code>F</code> full screen. In the 3D view, drag to look around and scroll to zoom. In the graph, drag to pan, scroll to zoom, double-click to reset.</p>';
+    h += '<h3>🧩 Piecewise coasters</h3><p>Switch the top-left toggle from <b>ƒ One function</b> to <b>🧩 Pieces</b>. Each piece gets its own formula and its own x-values, like <code>2x</code> for <code>0 ≤ x &lt; 3</code>. The <b>🧩 Pieces</b> tab checks every joint as you type: <b>✓ smooth</b> (same height and same slope), <b>⚠ corner</b> (connected, but the slope jumps — riders feel a jolt), <b>✗ jump</b> (the train flies… or crashes into a wall), or a <b>gap</b>. Overlapping pieces are refused: they would give one x two heights, which fails the vertical line test. The graph uses closed dots ● for included endpoints (≤) and open dots ○ for excluded ones (&lt;). Use a letter like <code>k</code> in a piece to get a slider, then find the k that connects the pieces.</p>';
     h += '<h3>🎢 The physics (really!)</h3><p>The train rolls under real gravity (9.81 m/s²) with a little friction. Height turns into speed (<b>v = √(2gh)</b>), so the train can never climb higher than its energy allows — use the chain lift or a launch. G-forces come from the track\'s curve: concave up (∪) presses you into your seat, concave down (∩) lifts you out of it. If the track ends in mid-air or has a gap, the train flies along a parabola!</p>';
     h += '<h3 id="gloss">📖 Math words</h3>' + glossaryHTML();
     h += '<h3>🍎 For teachers</h3><ul>';
     h += '<li><b>Predict, then ride:</b> turn on 🔮 Predict first — students click where they think the coaster will be fastest (energy ↔ height).</li>';
     h += '<li><b>Transformations:</b> the 🧬 Remix cards show each rule (f(x − h), a·f(x), f(bx)…) with a before/after preview.</li>';
     h += '<li><b>Match the Track</b> (🏅 tab): graph-to-equation practice from linear through sinusoids.</li>';
+    h += '<li><b>Piecewise functions:</b> students build a coaster section by section in 🧩 Pieces mode. Ask them to <i>predict</i> whether each joint will be smooth, a corner or a jump before they press Build, then ride it. The “Find k!” and “Tangent Takeoff” examples are classic continuity problems, and the 🔍 Evaluate box shows which piece an x-value uses.</li>';
     h += '<li><b>Engineering challenge:</b> the “Safety Inspector” badge needs excitement ≥ 5 with G-forces between −1.5 and 5 — students must reason about shape, stretches and curvature.</li>';
     h += '<li><b>Collecting work:</b> students can copy a 🔗 track code or export all tracks (🗂️ Garage) and submit the file.</li>';
     h += '<li><b>Phones & Chromebooks:</b> share the web link <a href="' + FC.WEB_URL + '" target="_blank" rel="noopener">' + esc(FC.WEB_URL) + '</a> — phones can\'t run the app from a file sent by text or email.</li>';
@@ -594,7 +963,7 @@ App.panels = (function () {
     kp.hidden = false;
   }
   function keypadInsert(v) {
-    const inp = el.fnInput;
+    const inp = state.mode === 'pieces' && state.lastPieceInput && document.body.contains(state.lastPieceInput) ? state.lastPieceInput : el.fnInput;
     const s0 = inp.selectionStart != null ? inp.selectionStart : inp.value.length, s1 = inp.selectionEnd != null ? inp.selectionEnd : inp.value.length;
     let val = inp.value, caret;
     if (v === 'BS') { const from = s0 === s1 ? Math.max(0, s0 - 1) : s0; val = val.slice(0, from) + val.slice(s1); caret = from; }
@@ -602,7 +971,8 @@ App.panels = (function () {
     else { val = val.slice(0, s0) + v + val.slice(s1); caret = s0 + v.length; }
     inp.value = val;
     inp.focus(); inp.setSelectionRange(caret, caret);
-    App.schedulePreview();
+    if (inp === el.fnInput) App.schedulePreview();
+    else inp.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   // ---------------------------------------------------------------- graph chips
@@ -631,5 +1001,6 @@ App.panels = (function () {
   return {
     renderBlueprint, renderRemix, markRemixDirty, renderMissions, renderGarage, showResults, runLab, openModal, closeModal, showHelp, showWelcome, showSettings, showGloss,
     showCode, showLoadCode, toggleKeypad, keypadInsert, renderGraphTools, onChip, updateLaunchOut, applyShadows, isRemixDirty: () => remixDirty, baseInfo, labSettings,
+    showTab, syncPieces, renderPieces, bindPieces, buildFromPieces, rowsToText, rowsFromAST,
   };
 })();

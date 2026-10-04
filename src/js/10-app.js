@@ -15,6 +15,7 @@ var App = (function () {
     meta: { usedMutation: false, usedSlider: false, predictionGreat: false, matchesDone: 0, pendingMutation: false },
     rideLog: [], speedSamples: [], forecast: null, world: null, graph: null, worldFailed: false,
     narrQueue: [], narrLast: 0, chip: null, chipUntil: 0,
+    mode: 'single', pieces: [], pwCheck: null, savedSingle: null, savedPieces: null,
   };
 
   const el = {};
@@ -23,7 +24,9 @@ var App = (function () {
       'view3d', 'c3dHost', 'vignette', 'hud', 'hudSpeed', 'hudSpeedUnit', 'hudSpeedSub', 'hudSpeedBar', 'hudX', 'hudY', 'hudSlope', 'gmNeedle', 'hudG', 'enPE', 'enKE', 'enHeat',
       'camSeg', 'btnFull', 'statusChip', 'narration', 'results', 'fallback3d', 'loading3d', 'btnRide', 'btnReset', 'startMode', 'launchCtl', 'launchSpeed', 'launchOut', 'btnMinLaunch',
       'warpSeg', 'chkPredict', 'viewSeg', 'view2d', 'c2d', 'graphTools', 'graphReadout', 'predictPrompt', 'missionBadge', 'modal', 'keypad', 'toasts', 'confetti',
+      'modeSeg', 'pwSummary', 'tabBtnPieces', 'hudPieceRow', 'hudPiece',
     ].forEach((id) => { el[id] = document.getElementById(id); });
+    el.domField = $('.dom-field');
     el.stage = $('.stage');
     el.fnField = $('.fn-field');
   }
@@ -148,16 +151,32 @@ var App = (function () {
     if (!opts.quick) syncParams(r.params); else r.params.forEach((n) => { if (state.params[n] === undefined) state.params[n] = 1; });
     const P = state.params;
     el.domA.classList.remove('err'); el.domB.classList.remove('err');
-    const A = FCMath.evalConstExpr(el.domA.value, P), B = FCMath.evalConstExpr(el.domB.value, P);
+    // piecewise: the pieces must make a function, and they set the domain
+    const isPW = r.ast.type === 'piecewise';
+    let pwc = null, pwLo = NaN, pwHi = NaN;
+    if (isPW) {
+      pwc = FCAnalysis.pwCheck(r.ast, P);
+      state.pwCheck = pwc;
+      if (App.panels) App.panels.syncPieces(r.ast, pwc, !!opts.fromEditor || !!opts.quick);
+      if (pwc.errors.length) {
+        if (!opts.quick) { toast('✋ ' + pwc.errors[0].msg, 'err', 7000); setModeUI('pieces'); if (App.panels) App.panels.showTab('pieces'); }
+        return false;
+      }
+      pwLo = Math.min(...pwc.info.pieces.map((q) => q.lo)); pwHi = Math.max(...pwc.info.pieces.map((q) => q.hi));
+    }
+    const needBox = (v) => !isPW || !isFinite(v);
+    const A = needBox(pwLo) ? FCMath.evalConstExpr(el.domA.value, P) : { ok: true, value: pwLo };
+    const B = needBox(pwHi) ? FCMath.evalConstExpr(el.domB.value, P) : { ok: true, value: pwHi };
     if (!A.ok) { el.domA.classList.add('err'); if (!opts.quick) toast('⚠️ Start of track: ' + A.error, 'err'); return false; }
     if (!B.ok) { el.domB.classList.add('err'); if (!opts.quick) toast('⚠️ End of track: ' + B.error, 'err'); return false; }
+    if (isPW) { if (isFinite(pwLo)) el.domA.value = FC.numText(pwLo, 8); if (isFinite(pwHi)) el.domB.value = FC.numText(pwHi, 8); }
     let a = A.value, b = B.value;
     if (a === b) { el.domB.classList.add('err'); toast('⚠️ The start and end are the same — the track needs some length!', 'err'); return false; }
     if (a > b) { const t = el.domA.value; el.domA.value = el.domB.value; el.domB.value = t; [a, b] = [b, a]; if (!opts.quick) toast('↔️ I swapped the ends so the track runs left to right.'); }
     if (b - a > 1e6 || Math.abs(a) > 1e7 || Math.abs(b) > 1e7) { toast('⚠️ That domain is enormous — try something between −1000 and 1000.', 'err'); return false; }
     const fn = FCMath.compile(r.ast, P);
     const coeffs = FCMath.toPoly(r.ast, P);
-    const an = FCAnalysis.analyze({ fn, a, b, coeffs, ast: r.ast, P, samples: opts.quick ? 1400 : 2400 });
+    const an = FCAnalysis.analyze({ fn, a, b, coeffs, ast: r.ast, P, pw: pwc, samples: opts.quick ? 1400 : 2400 });
     if (!an.ok) {
       if (!opts.quick) { toast('⚠️ ' + an.error, 'err'); el.fnPreview.className = 'fn-preview err'; el.fnPreview.textContent = '⚠️ ' + an.error; }
       return false;
@@ -166,6 +185,8 @@ var App = (function () {
     const track = FCPhysics.buildTrack(an, fn, { Sx: S, Sy });
     stopRide(true);
     Object.assign(state, { parsed: r, fn, coeffs, an, track, a, b, fText: el.fnInput.value.trim(), aText: el.domA.value.trim(), bText: el.domB.value.trim() });
+    if (!isPW) state.pwCheck = null;
+    setModeUI(isPW ? 'pieces' : 'single');
     state.prediction = null;
     state.graph.prediction = null;
     state.graph.extraPts = null;
@@ -202,6 +223,51 @@ var App = (function () {
     el.btnRide.classList.add('pulse');
     return true;
   }
+
+  // ---------------------------------------------------------------- one function ⇄ pieces
+  function setModeUI(mode) {
+    state.mode = mode;
+    const pw = mode === 'pieces';
+    el.fnField.classList.toggle('pw-mode', pw);
+    el.pwSummary.hidden = !pw;
+    $$('button', el.modeSeg).forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
+    const unbounded = pw && state.pwCheck && state.pwCheck.domain.unbounded;
+    el.domField.hidden = pw && !unbounded;
+    el.tabBtnPieces.hidden = !pw;
+    $('.tabs').classList.toggle('five', pw);
+    el.hudPieceRow.hidden = !pw;
+    if (!pw && $('#tab-pieces').classList.contains('on') && App.panels) App.panels.showTab('blueprint');
+    if (pw) {
+      const n = state.pwCheck ? state.pwCheck.info.pieces.length : (state.pieces || []).length;
+      const d = state.pwCheck && state.pwCheck.domain;
+      el.pwSummary.innerHTML = '🧩 ' + n + ' piece' + (n === 1 ? '' : 's') + (d && d.lo !== null && d.hi !== null ? ' · ' + fmt(d.lo, 3) + ' ≤ <i>x</i> ≤ ' + fmt(d.hi, 3) : '') + '<span class="edit">✏️ edit pieces</span>';
+    }
+  }
+  /** The ƒ / 🧩 switch in the header. */
+  function switchMode(mode) {
+    if (mode === state.mode) { if (mode === 'pieces' && App.panels) App.panels.showTab('pieces', true); return; }
+    if (state.match && mode === 'pieces') {
+      loadTrack({ f: '{' + 'x if ' + state.aText + ' <= x <= ' + state.bText + '}', a: state.aText, b: state.bText }, { keepMatch: true });
+      if (App.panels) App.panels.showTab('pieces', true);
+      return;
+    }
+    if (mode === 'pieces') {
+      state.savedSingle = { f: state.fText, a: state.aText, b: state.bText, params: Object.assign({}, state.params), name: state.name };
+      const src = state.savedPieces || { f: FCContent.PW_STARTER.f, name: FCContent.PW_STARTER.name, params: {} };
+      loadTrack({ f: src.f, a: '', b: '', params: src.params || {}, name: src.name });
+      if (App.panels) App.panels.showTab('pieces', true);
+      toast('🧩 <b>Piecewise mode</b>: build your coaster from pieces in the 🧩 Pieces tab. Each joint is checked: does it connect? is it smooth?', '', 6500);
+    } else {
+      state.savedPieces = { f: state.fText, params: Object.assign({}, state.params), name: state.name };
+      loadTrack(state.savedSingle || FCContent.PRESETS[0]);
+    }
+  }
+  function pieceNear(x) {
+    const info = state.an && state.an.pw;
+    if (!info) return null;
+    return info.pieceAt(x) || info.pieceAt(x - 1e-9 * (1 + Math.abs(x))) || info.pieceAt(x + 1e-9 * (1 + Math.abs(x)));
+  }
+  function pieceTag(k) { return '<span class="pw-num" style="--pc:' + FC.pieceColor(k) + ';display:inline-grid;width:18px;height:18px;font-size:11px;vertical-align:middle">' + (k + 1) + '</span>'; }
 
   // physics forecast (headless) for coach tips and the blueprint
   let forecastTimer = null;
@@ -353,6 +419,10 @@ var App = (function () {
       const ang = Math.atan(slope * (state.track ? state.track.Sy / state.track.Sx : 1)) * 180 / Math.PI;
       el.hudSlope.textContent = fmt(slope, 2) + (Math.abs(slope) < 1e-3 ? ' →' : slope > 0 ? ' ↗' : ' ↘') + ' ' + Math.abs(ang).toFixed(0) + '°';
     }
+    if (state.mode === 'pieces' && x !== null) {
+      const pc = pieceNear(x);
+      el.hudPiece.innerHTML = pc ? pieceTag(pc.k) : '—';
+    }
     const g = FC.clamp(G, -3, 8);
     el.gmNeedle.style.left = ((g + 3) / 11) * 100 + '%';
     el.hudG.textContent = (G > 9.95 ? '10+' : G < -2.95 ? '−3−' : fmt(G, 1).replace(/^(-?\d+)$/, '$1.0')) + ' G';
@@ -431,9 +501,18 @@ var App = (function () {
           const z = Math.abs(e.y) < 2e-3 * Math.max(1, an.yMax - an.yMin);
           msg = '🎢 Starting at <i>x</i> = ' + fmt(e.x, 3) + ', height <i>f</i>(<i>x</i>) = ' + FC.fmtZ(e.y, 1, 3) + (z ? ' — ground level (a zero!)' : '') + '.';
           if (e.mode === 'launch') msg += ' 🚀 Launch at ' + speedText(e.v) + '!';
+          const pc0 = pieceNear(e.x);
+          if (pc0) msg += ' First up: piece ' + pieceTag(pc0.k) + ' <i>f</i>(<i>x</i>) = ' + FCMath.toHTML(pc0.ast) + '.';
           break;
         }
-        case 'lift-on': if (!state._liftSaid) { msg = '⛓️ Chain lift: the track is <b>increasing</b> here (slope &gt; 0), so the chain pulls us up.'; state._liftSaid = true; } break;
+        case 'lift-on': {
+          if (state._liftSaid) break;
+          const sl = state.an.d1(e.x);
+          if (isFinite(sl) && Math.abs(sl) < 0.02) msg = '⛓️ Flat track (slope 0) — booster wheels keep the train rolling.';
+          else msg = '⛓️ Chain lift: the track is <b>increasing</b> here (slope &gt; 0), so the chain pulls us up.';
+          state._liftSaid = true;
+          break;
+        }
         case 'landmark': {
           if (!e.first) break;
           FCAudio.landmark(e.lm.type);
@@ -444,6 +523,11 @@ var App = (function () {
           else if (lm.type === 'inflection') msg = '〰️ Inflection point at <i>x</i> = ' + fmt(lm.x, 3) + ': the track switches which way it bends.';
           else if (lm.type === 'yint') msg = '🔷 Crossing the y-axis: <i>f</i>(0) = ' + FC.fmtZ(lm.y, 1, 3) + ' is the y-intercept.';
           else if (lm.type === 'steepest') msg = (lm.data.slope < 0 ? '⬇️ Steepest drop' : '⬆️ Steepest climb') + ': slope ' + fmt(lm.data.slope, 2) + ' (' + lm.data.angle.toFixed(0) + '°)!';
+          else if (lm.type === 'joint') {
+            const j = lm.data, pa = state.parsed.ast.pieces[j.right];
+            msg = '🧩 Piece ' + pieceTag(j.right) + ' begins: <i>f</i>(<i>x</i>) = ' + FCMath.toHTML(pa.ast) + ' for ' + FCMath.pwCondHTML(pa) + (j.kind === 'smooth' ? ' — a smooth joint ✓' : ' — the slope jumps from ' + fmt(j.sL, 2) + ' to ' + fmt(j.sR, 2) + '!');
+            prio = 2;
+          }
           prio = lm.type === 'inflection' ? 0 : 1;
           break;
         }
@@ -459,7 +543,11 @@ var App = (function () {
           FCAudio.whoosh(0.8);
           const p = e.parab;
           const eq = p ? 'y = ' + fmt(p.A, 3) + '(x − ' + fmt(p.h, 3) + ')² + ' + fmt(p.k, 3) : '';
-          msg = (e.offEnd ? '🚀 The track ends in mid-air! Flying along the parabola ' : '🕳️ Gap in the track — jumping it! Flight path: ') + '<i>' + eq.replace('− −', '+ ').replace('+ −', '− ') + '</i>';
+          let why = e.offEnd ? '🚀 The track ends in mid-air! Flying along the parabola ' : '🕳️ Gap in the track — jumping it! Flight path: ';
+          const jt = !e.offEnd && state.an.joints ? state.an.joints.find((q) => (q.kind === 'jump' && Math.abs(q.x - e.x) < 1e-6 * (1 + Math.abs(q.x))) || (q.kind === 'gap' && Math.abs(q.x0 - e.x) < 1e-6 * (1 + Math.abs(q.x0)))) : null;
+          if (jt && jt.kind === 'jump') why = '🦘 Jump discontinuity! Piece ' + pieceTag(jt.left) + ' ends at height ' + fmt(jt.L, 3) + ' but piece ' + pieceTag(jt.right) + ' starts at ' + fmt(jt.R, 3) + '. Flying along ';
+          else if (jt) why = '🦘 No piece covers ' + fmt(jt.x0, 3) + ' &lt; <i>x</i> &lt; ' + fmt(jt.x1, 3) + ' — flying across the gap along ';
+          msg = why + '<i>' + eq.replace('− −', '+ ').replace('+ −', '− ') + '</i>';
           prio = 3;
           if (e.landing) {
             const pts = (state.graph.extraPts || []).concat([{ x: e.landing.X / state.track.Sx + state.track.xc, y: e.landing.Y / state.track.Sy }]);
@@ -472,6 +560,7 @@ var App = (function () {
           FCAudio.thud();
           if (state.world) state.world.burst(e.x !== undefined ? (e.x - state.track.xc) * state.track.Sx : 0, e.y * state.track.Sy);
           msg = e.onto === 'ground' ? '💥 Landed at <i>x</i> = ' + fmt(e.x, 3) + ' — right where the flight parabola has a zero (height 0)!' : '🛬 Landed back on the track at <i>x</i> = ' + fmt(e.x, 3) + (e.impact > 6 ? ' — hard landing!' : '.');
+          if (e.onto !== 'ground') { const pl = pieceNear(e.x); if (pl) msg += ' Now on piece ' + pieceTag(pl.k) + '.'; }
           prio = 3;
           break;
         case 'crash': FCAudio.thud(); msg = '💥 CRASH! The coaster hit the side of the next piece of track.'; prio = 3; break;
@@ -528,7 +617,7 @@ var App = (function () {
   function missionCtx() {
     const prog = FCStore.progress.get();
     state.meta.matchesDone = Object.values(prog.match || {}).filter((s) => s >= 2).length;
-    return { an: state.an, poly: state.an && state.an.poly, fn: state.fn, ride: state.rideDone ? state.stats : null, ratings: state.rideDone ? state.ratings : null, meta: state.meta };
+    return { an: state.an, poly: state.an && state.an.poly, fn: state.fn, ride: state.rideDone ? state.stats : null, ratings: state.rideDone ? state.ratings : null, meta: state.meta, params: state.paramNames || [] };
   }
   function checkMissions(when) {
     if (!state.an) return [];
@@ -567,6 +656,10 @@ var App = (function () {
     el.domA.value = FC.numText(level.a, 6); el.domB.value = FC.numText(level.b, 6);
     el.domA.readOnly = el.domB.readOnly = true;
     el.fnInput.value = 'x';
+    if (r.ast.type === 'piecewise') {
+      // same intervals as the target; the formulas are the puzzle
+      el.fnInput.value = '{' + r.ast.pieces.map((q) => '0 if ' + FCMath.pwCondText(q)).join('; ') + '}';
+    }
     state.params = {};
     el.matchBar.hidden = false;
     renderMatchBar();
@@ -732,5 +825,6 @@ var App = (function () {
     $, $$, el, state, settings, saveSettings, grabElements, build, renderPreview, schedulePreview, startRide, stopRide, togglePause, onRideButton,
     setCamera, setLayout, resizeAll, toast, flushToasts, confetti, loadTrack, snapToZeros, enterMatch, exitMatch, checkMissions, updateMissionBadge, frame, onGraphPick, refreshGhost,
     speedText, speedParts, rideOptions, forecastSoon, syncParams, renderParamBar, missionCtx, updateHUDIdle, setRideButton, handleEvents,
+    switchMode, setModeUI, pieceNear, pieceTag,
   };
 })();

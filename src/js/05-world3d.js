@@ -470,17 +470,44 @@ var FCWorld = (function () {
       return m;
     }
 
+    pieceMat(k) {
+      const key = 'piece' + (k % FC.PIECE_COLORS.length);
+      if (!this.mats[key]) this.mats[key] = new THREE.MeshStandardMaterial({ color: new THREE.Color(FC.pieceColor(k)), metalness: 0.35, roughness: 0.35 });
+      return this.mats[key];
+    }
+
     buildSegment(track, seg) {
       const { P, T, N, step } = this.resample(track, seg);
       const railH = 0.32, gauge = 0.56;
-      for (const side of [-1, 1]) {
-        const pts = P.map((p, i) => new THREE.Vector3(p.x + N[i][0] * railH, p.y + N[i][1] * railH, side * gauge));
-        const m = this.tube(pts, 0.1, 6, this.mats.rail);
-        if (m) this.trackGroup.add(m);
+      // piecewise tracks: one rail color per piece
+      const info = this.an && this.an.pw;
+      const runs = [];
+      if (info) {
+        let cur = null;
+        for (let i = 0; i < P.length; i++) {
+          const x = P[i].x / track.Sx + track.xc;
+          const pc = info.pieceAt(x) || info.pieceAt(x - 1e-9 * (1 + Math.abs(x))) || info.pieceAt(x + 1e-9 * (1 + Math.abs(x)));
+          const k = pc ? pc.k : (cur ? cur.k : 0);
+          if (!cur || cur.k !== k) { if (cur) cur.i1 = i; cur = { k, i0: Math.max(0, i - 1), i1: i }; runs.push(cur); }
+          cur.i1 = i;
+        }
+      } else runs.push({ k: -1, i0: 0, i1: P.length - 1 });
+      for (const run of runs) {
+        const mat = run.k < 0 ? this.mats.rail : this.pieceMat(run.k);
+        for (const side of [-1, 1]) {
+          const pts = [];
+          for (let i = run.i0; i <= run.i1; i++) pts.push(new THREE.Vector3(P[i].x + N[i][0] * railH, P[i].y + N[i][1] * railH, side * gauge));
+          const m = this.tube(pts, 0.1, 6, mat);
+          if (m) this.trackGroup.add(m);
+        }
       }
-      const spine = P.map((p, i) => new THREE.Vector3(p.x - N[i][0] * 0.05, p.y - N[i][1] * 0.05, 0));
-      const sm = this.tube(spine, 0.26, 6, this.mats.spine);
-      if (sm) this.trackGroup.add(sm);
+      // the thick center beam carries the piece color too, so pieces stand out from far away
+      for (const run of runs) {
+        const spine = [];
+        for (let i = run.i0; i <= run.i1; i++) spine.push(new THREE.Vector3(P[i].x - N[i][0] * 0.05, P[i].y - N[i][1] * 0.05, 0));
+        const sm = this.tube(spine, 0.26, 6, run.k < 0 ? this.mats.spine : this.pieceMat(run.k));
+        if (sm) this.trackGroup.add(sm);
+      }
       // ties
       const every = Math.max(1, Math.round(0.95 / step));
       const count = Math.floor((P.length - 1) / every) + 1;
@@ -665,6 +692,21 @@ var FCWorld = (function () {
     buildLandmarks(track, an, ls) {
       const W = (x, y) => track.toWorld(x, y);
       const add = (o) => this.sceneryGroup.add(o);
+      if (an.pw) {
+        for (const p of an.pw.pieces) {
+          const x = Math.max(p.lo, an.a);
+          const y = p.f(isFinite(p.lo) && p.lo >= an.a ? p.lo : an.a);
+          if (!isFinite(y) || x > an.b) continue;
+          const q = W(x, y);
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 3.4, 6), this.pieceMat(p.k));
+          post.position.set(q.X, q.Y + 1.7, -2.8);
+          add(post);
+          const txt = 'piece ' + (p.k + 1) + ':  f(x) = ' + FCMath.toText(p.ast);
+          const lab = makeLabel(txt.length > 48 ? txt.slice(0, 46) + '…' : txt, { size: ls * 0.7, bg: FC.pieceColor(p.k), fg: '#fff', border: '#fff', anchorBottom: true });
+          lab.position.set(q.X, q.Y + 3.5, -2.8);
+          add(lab);
+        }
+      }
       const coord = (x, y) => '(' + FC.fmtZ(x, 1, 2) + ', ' + FC.fmtZ(y, 1, 2) + ')';
       const flagGeo = new THREE.PlaneGeometry(1.6, 1.0);
       for (const m of an.maxima) {
@@ -891,7 +933,7 @@ var FCWorld = (function () {
       for (const r of this.cars[0].userData.riders) r.visible = !riderHide;
       // decorations; signs fade out when the camera is right on top of them
       const cp = this.camera.position;
-      const near = this.camMode === 'pov' ? 14 : 5;
+      const near = this.camMode === 'pov' ? 14 : this.camMode === 'chase' ? 16 : 5;
       this.sceneryGroup.traverse((o) => {
         if (!o.userData.label || !o.material) return;
         const d = o.getWorldPosition(this._tmpV || (this._tmpV = new THREE.Vector3())).distanceTo(cp);

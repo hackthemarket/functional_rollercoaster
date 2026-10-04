@@ -7,6 +7,10 @@ var FC = (typeof FC !== 'undefined') ? FC : {};
 /** Public web version (GitHub Pages) — the easiest way to open the app on phones. */
 FC.WEB_URL = 'https://hackthemarket.github.io/functional_rollercoaster/';
 
+/** One color per piece of a piecewise track (UI, graph and 3D rails all match). */
+FC.PIECE_COLORS = ['#ff4d6d', '#3a8dff', '#10b981', '#f5a400', '#a06cf0', '#ff7f2a', '#ef4fa6', '#14b8a6'];
+FC.pieceColor = (k) => FC.PIECE_COLORS[((k % FC.PIECE_COLORS.length) + FC.PIECE_COLORS.length) % FC.PIECE_COLORS.length];
+
 FC.clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 FC.lerp = (a, b, t) => a + (b - a) * t;
 FC.smooth = (t) => t * t * (3 - 2 * t);
